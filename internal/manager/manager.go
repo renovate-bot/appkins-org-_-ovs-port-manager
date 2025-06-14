@@ -131,6 +131,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.ovsClient.List(ctx, &l); err != nil {
 		return fmt.Errorf("failed to list Open vSwitch: %v", err)
 	}
+	fmt.Printf("Connected to OVS database: %v\n", l[0].Bridges)
 	m.logger.WithField("bridges", l[0].Bridges).Info("Connected to OVS database")
 
 	// Ensure default bridge exists
