@@ -16,9 +16,9 @@ import (
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/go-logr/logr"
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/ovsdb"
-	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
@@ -42,7 +42,7 @@ const (
 type Manager struct {
 	dockerClient *dockerclient.Client
 	ovsClient    client.Client
-	logger       *logrus.Logger
+	logger       logr.Logger
 	config       *config.Config
 }
 
@@ -58,7 +58,7 @@ type ContainerOVSConfig struct {
 }
 
 // New creates a new OVS port manager
-func New(logger *logrus.Logger) (*Manager, error) {
+func New(logger logr.Logger) (*Manager, error) {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -90,17 +90,6 @@ func New(logger *logrus.Logger) (*Manager, error) {
 	}
 	models.Schema()
 
-	// Create logger with configurable settings
-	level, err := logrus.ParseLevel(cfg.Logging.Level)
-	if err != nil {
-		level = logrus.InfoLevel
-	}
-	logger.SetLevel(level)
-
-	if cfg.Logging.Format == "json" {
-		logger.SetFormatter(&logrus.JSONFormatter{})
-	}
-
 	return &Manager{
 		dockerClient: dockerClient,
 		ovsClient:    ovsClient,
@@ -111,7 +100,7 @@ func New(logger *logrus.Logger) (*Manager, error) {
 
 // Start begins monitoring Docker events and managing OVS ports
 func (m *Manager) Start(ctx context.Context) error {
-	m.logger.Info("Starting OVS Port Manager...")
+	m.logger.V(3).Info("Starting OVS Port Manager...")
 
 	// Ensure required directories exist
 	if err := m.ensureNetnsDirectory(); err != nil {
@@ -131,7 +120,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to list Open vSwitch: %v", err)
 	}
 
-	m.logger.WithField("bridges", l[0].Bridges).Info("Connected to OVS database")
+	m.logger.V(1).Info("Connected to OVS database", "bridges", l[0].Bridges)
 
 	// Ensure default bridge exists
 	if err := m.ensureDefaultBridge(ctx); err != nil {
@@ -140,7 +129,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// Process existing containers
 	if err := m.processExistingContainers(ctx); err != nil {
-		m.logger.WithError(err).Warn("Failed to process existing containers")
+		m.logger.V(1).Error(err, "Failed to process existing containers")
 	}
 
 	// Start listening for Docker events
@@ -158,14 +147,14 @@ func (m *Manager) Start(ctx context.Context) error {
 		select {
 		case event := <-eventsChan:
 			if err := m.handleContainerEvent(ctx, event); err != nil {
-				m.logger.WithError(err).Error("Failed to handle container event")
+				m.logger.Error(err, "Failed to handle container event")
 			}
 		case err := <-errChan:
 			if err != nil {
 				return fmt.Errorf("docker events error: %v", err)
 			}
 		case <-ctx.Done():
-			m.logger.Info("Shutting down OVS Port Manager...")
+			m.logger.V(3).Info("Shutting down OVS Port Manager...")
 			return nil
 		}
 	}
@@ -184,11 +173,11 @@ func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 	}
 
 	if len(bridges) > 0 {
-		m.logger.WithField("bridge", m.config.OVS.DefaultBridge).Info("Default bridge already exists")
+		m.logger.V(1).Info("Default bridge already exists", "bridge", m.config.OVS.DefaultBridge)
 		return nil
 	}
 
-	m.logger.WithField("bridge", m.config.OVS.DefaultBridge).Info("Creating default bridge")
+	m.logger.V(1).Info("Creating default bridge", "bridge", m.config.OVS.DefaultBridge)
 
 	// Create bridge
 	bridge := &models.Bridge{
@@ -224,14 +213,13 @@ func (m *Manager) processExistingContainers(ctx context.Context) error {
 	for _, container := range containers {
 		config := m.extractOVSConfig(container.ID, container.Labels)
 		if config != nil {
-			m.logger.WithFields(logrus.Fields{
-				"container_id": config.ContainerID[:12],
-				"ip_address":   config.IPAddress,
-				"bridge":       config.Bridge,
-			}).Info("Processing existing container")
+			m.logger.V(1).Info("Processing existing container",
+				"container_id", config.ContainerID[:12],
+				"ip_address", config.IPAddress,
+				"bridge", config.Bridge)
 
 			if err := m.addOVSPort(ctx, config); err != nil {
-				m.logger.WithError(err).WithField("container_id", config.ContainerID[:12]).Error("Failed to add OVS port for existing container")
+				m.logger.Error(err, "Failed to add OVS port for existing container", "container_id", config.ContainerID[:12])
 			}
 		}
 	}
@@ -265,18 +253,17 @@ func (m *Manager) handleContainerStart(ctx context.Context, containerID string) 
 		return nil
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"container_id": containerID[:12],
-		"ip_address":   config.IPAddress,
-		"bridge":       config.Bridge,
-	}).Info("Container started with OVS configuration")
+	m.logger.V(1).Info("Container started with OVS configuration",
+		"container_id", containerID[:12],
+		"ip_address", config.IPAddress,
+		"bridge", config.Bridge)
 
 	return m.addOVSPort(ctx, config)
 }
 
 // handleContainerStop handles container stop events
 func (m *Manager) handleContainerStop(ctx context.Context, containerID string) error {
-	m.logger.WithField("container_id", containerID[:12]).Info("Container stopped, cleaning up OVS ports")
+	m.logger.V(1).Info("Container stopped, cleaning up OVS ports", "container_id", containerID[:12])
 	return m.removeOVSPort(ctx, containerID)
 }
 
@@ -325,11 +312,10 @@ func (m *Manager) addOVSPort(ctx context.Context, config *ContainerOVSConfig) er
 	}
 
 	if exists {
-		m.logger.WithFields(logrus.Fields{
-			"container_id": config.ContainerID[:12],
-			"port_name":    portName,
-			"bridge":       config.Bridge,
-		}).Info("Port already exists, skipping")
+		m.logger.V(1).Info("Port already exists, skipping",
+			"container_id", config.ContainerID[:12],
+			"port_name", portName,
+			"bridge", config.Bridge)
 		return nil
 	}
 
@@ -349,12 +335,11 @@ func (m *Manager) addOVSPort(ctx context.Context, config *ContainerOVSConfig) er
 		return fmt.Errorf("failed to configure container interface: %v", err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"container_id": config.ContainerID[:12],
-		"bridge":       config.Bridge,
-		"interface":    config.Interface,
-		"ip_address":   config.IPAddress,
-	}).Info("Successfully added OVS port using ovs-docker method")
+	m.logger.V(1).Info("Successfully added OVS port using ovs-docker method",
+		"container_id", config.ContainerID[:12],
+		"bridge", config.Bridge,
+		"interface", config.Interface,
+		"ip_address", config.IPAddress)
 
 	return nil
 }
@@ -370,29 +355,28 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	}
 
 	if len(ports) == 0 {
-		m.logger.WithField("container_id", containerID[:12]).Debug("No OVS ports found for container")
+		m.logger.V(3).V(2).Info("No OVS ports found for container", "container_id", containerID[:12])
 		return nil
 	}
 
 	for _, portName := range ports {
-		m.logger.WithFields(logrus.Fields{
-			"container_id": containerID[:12],
-			"port_name":    portName,
-		}).Info("Removing OVS port (ovs-docker method)")
+		m.logger.V(1).Info("Removing OVS port (ovs-docker method)",
+			"container_id", containerID[:12],
+			"port_name", portName)
 
 		// Remove port from OVS (mirroring: ovs-vsctl --if-exists del-port "$PORT")
 		if err := m.removePortFromOVSBridge(ctx, portName); err != nil {
-			m.logger.WithError(err).WithField("port_name", portName).Error("Failed to remove port from OVS")
+			m.logger.Error(err, "Failed to remove port from OVS", "port_name", portName)
 		}
 
 		// Delete the veth pair (mirroring: ip link delete "$PORT")
 		// This will delete both sides of the veth pair
 		if err := m.deleteLinkByName(portName); err != nil {
-			m.logger.WithError(err).WithField("port_name", portName).Error("Failed to delete veth pair")
+			m.logger.Error(err, "Failed to delete veth pair", "port_name", portName)
 		}
 	}
 
-	m.logger.WithField("container_id", containerID[:12]).Info("Completed OVS port cleanup")
+	m.logger.V(3).Info("Completed OVS port cleanup", "container_id", containerID[:12])
 	return nil
 }
 
@@ -422,11 +406,10 @@ func (m *Manager) generatePortName(containerID string) string {
 
 	// Validate that port name with suffix won't exceed kernel limit
 	if len(portName+"_c") > InterfaceNameLimit {
-		m.logger.WithFields(logrus.Fields{
-			"portName": portName,
-			"length":   len(portName + "_c"),
-			"limit":    InterfaceNameLimit,
-		}).Warn("Generated port name may exceed kernel interface name limit")
+		m.logger.V(1).Error(nil, "Generated port name may exceed kernel interface name limit",
+			"portName", portName,
+			"length", len(portName + "_c"),
+			"limit", InterfaceNameLimit)
 	}
 
 	return portName
@@ -448,10 +431,9 @@ func (m *Manager) createVethPair(portName string) error {
 		return fmt.Errorf("failed to create veth pair %s<->%s: %v", portName, peerName, err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"host_side":      portName,
-		"container_side": peerName,
-	}).Debug("Created veth pair")
+	m.logger.V(2).Info("Created veth pair",
+		"host_side", portName,
+		"container_side", peerName)
 
 	return nil
 }
@@ -481,10 +463,9 @@ func (m *Manager) moveLinkToNetns(interfaceName string, pid int) error {
 		return fmt.Errorf("failed to move link %s to netns %d: %v", interfaceName, pid, err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"interface": interfaceName,
-		"pid":       pid,
-	}).Debug("Moved interface to container namespace")
+	m.logger.V(2).Info("Moved interface to container namespace",
+		"interface", interfaceName,
+		"pid", pid)
 
 	return nil
 }
@@ -520,7 +501,7 @@ func (m *Manager) configureInterfaceInNetns(pid int, oldName, newName, ipAddr, m
 	// Ensure we switch back to host namespace
 	defer func() {
 		if err := netns.Set(hostNs); err != nil {
-			m.logger.WithError(err).Error("Failed to switch back to host namespace")
+			m.logger.V(3).Error(err, "Failed to switch back to host namespace")
 		}
 	}()
 
@@ -603,13 +584,12 @@ func (m *Manager) configureInterfaceInNetns(pid int, oldName, newName, ipAddr, m
 		}
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"interface": newName,
-		"ip":        ipAddr,
-		"mac":       macAddr,
-		"mtu":       mtu,
-		"gateway":   gateway,
-	}).Debug("Configured interface in container")
+	m.logger.V(2).Info("Configured interface in container",
+		"interface", newName,
+		"ip", ipAddr,
+		"mac", macAddr,
+		"mtu", mtu,
+		"gateway", gateway)
 
 	return nil
 }
@@ -629,7 +609,7 @@ func (m *Manager) deleteLinkByName(interfaceName string) error {
 		return fmt.Errorf("failed to delete link %s: %v", interfaceName, err)
 	}
 
-	m.logger.WithField("interface", interfaceName).Debug("Deleted network interface")
+	m.logger.V(3).V(2).Info("Deleted network interface", "interface", interfaceName)
 	return nil
 }
 
@@ -689,12 +669,11 @@ func (m *Manager) addPortToBridge(ctx context.Context, bridge, portName, contain
 		return fmt.Errorf("failed to set link %s up: %v", hostSide, err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"bridge":         bridge,
-		"host_side":      hostSide,
-		"container_side": containerSide,
-		"container_id":   containerID[:12],
-	}).Info("Added port to OVS bridge (ovs-docker method)")
+	m.logger.V(1).Info("Added port to OVS bridge (ovs-docker method)",
+		"bridge", bridge,
+		"host_side", hostSide,
+		"container_side", containerSide,
+		"container_id", containerID[:12])
 
 	return nil
 }
@@ -713,10 +692,10 @@ func (m *Manager) createVethPairWithNames(hostName, containerName string) error 
 		return fmt.Errorf("failed to create veth pair: %v", err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"host_side":      hostName,
-		"container_side": containerName,
-	}).Debug("Created veth pair")
+	m.logger.V(2).Info("Created veth pair",
+		"host_side", hostName,
+		"container_side", containerName,
+	)
 
 	return nil
 }
@@ -884,14 +863,14 @@ func (m *Manager) configureContainerInterface(containerID, containerSideName str
 		return fmt.Errorf("failed to configure interface in container: %v", err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"container_id": containerID[:12],
-		"interface":    config.Interface,
-		"ip_address":   config.IPAddress,
-		"mac_address":  config.MACAddress,
-		"mtu":          config.MTU,
-		"gateway":      config.Gateway,
-	}).Info("Configured container interface (ovs-docker method)")
+	m.logger.Info("Configured container interface (ovs-docker method)",
+		"container_id", containerID[:12],
+		"interface", config.Interface,
+		"ip_address", config.IPAddress,
+		"mac_address", config.MACAddress,
+		"mtu", config.MTU,
+		"gateway", config.Gateway,
+	)
 
 	return nil
 }
@@ -915,11 +894,11 @@ func (m *Manager) findPortsForContainer(ctx context.Context, containerID string)
 		portNames = append(portNames, iface.Name)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"container_id": containerID[:12],
-		"port_count":   len(portNames),
-		"ports":        portNames,
-	}).Debug("Found ports for container")
+	m.logger.V(2).Info("Found ports for container",
+		"container_id", containerID[:12],
+		"port_count", len(portNames),
+		"ports", portNames,
+	)
 
 	return portNames, nil
 }
@@ -936,7 +915,7 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 	}
 
 	if len(ports) == 0 {
-		m.logger.WithField("port", portName).Debug("Port not found in OVS database")
+		m.logger.V(3).V(2).Info("Port not found in OVS database", "port", portName)
 		return nil
 	}
 
@@ -949,7 +928,7 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 				return i.UUID == ifaceUUID
 			}).List(ctx, &ifaces)
 			if err != nil {
-				m.logger.WithError(err).WithField("interface_uuid", ifaceUUID).Warn("Failed to find interface")
+				m.logger.V(1).Error(err, "Failed to find interface", "interface_uuid", ifaceUUID)
 				continue
 			}
 			interfaces = append(interfaces, ifaces...)
@@ -961,7 +940,7 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 	for _, iface := range interfaces {
 		ops, err := m.ovsClient.Where(&iface).Delete()
 		if err != nil {
-			m.logger.WithError(err).WithField("interface", iface.Name).Warn("Failed to create interface delete operation")
+			m.logger.V(1).Error(err, "Failed to create interface delete operation", "interface", iface.Name)
 			continue
 		}
 		operations = append(operations, ops...)
@@ -971,7 +950,7 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 	for _, port := range ports {
 		ops, err := m.ovsClient.Where(&port).Delete()
 		if err != nil {
-			m.logger.WithError(err).WithField("port", port.Name).Warn("Failed to create port delete operation")
+			m.logger.V(1).Error(err, "Failed to create port delete operation", "port", port.Name)
 			continue
 		}
 		operations = append(operations, ops...)
@@ -987,16 +966,16 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 		// Check for errors
 		for i, result := range results {
 			if result.Error != "" && result.Error != "constraint violation" {
-				m.logger.WithFields(logrus.Fields{
-					"operation": i,
-					"error":     result.Error,
-					"details":   result.Details,
-				}).Warn("Cleanup operation failed")
+				m.logger.Info("Cleanup operation failed",
+					"operation", i,
+					"error", result.Error,
+					"details", result.Details,
+				)
 			}
 		}
 	}
 
-	m.logger.WithField("port", portName).Debug("Cleaned up OVS port")
+	m.logger.V(2).Info("Cleaned up OVS port", "port", portName)
 	return nil
 }
 
@@ -1012,7 +991,7 @@ func (m *Manager) ensureNetnsDirectory() error {
 		if err := os.MkdirAll(netnsDir, 0755); err != nil {
 			return fmt.Errorf("failed to create netns directory %s: %v", netnsDir, err)
 		}
-		m.logger.WithField("directory", netnsDir).Debug("Created netns directory")
+		m.logger.V(3).V(2).Info("Created netns directory", "directory", netnsDir)
 	}
 	return nil
 }
@@ -1039,10 +1018,10 @@ func (m *Manager) createTempNamespaceLink(pid int) (string, error) {
 		return "", fmt.Errorf("failed to create namespace link: %v", err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"pid":    pid,
-		"nsPath": nsPath,
-	}).Debug("Created temporary namespace link")
+	m.logger.V(2).Info("Created temporary namespace link",
+		"pid", pid,
+		"nsPath", nsPath,
+	)
 
 	return nsPath, nil
 }
@@ -1050,7 +1029,7 @@ func (m *Manager) createTempNamespaceLink(pid int) (string, error) {
 // removeTempNamespaceLink removes a temporary namespace link
 func (m *Manager) removeTempNamespaceLink(nsPath string) {
 	if err := os.Remove(nsPath); err != nil {
-		m.logger.WithError(err).WithField("nsPath", nsPath).Debug("Failed to remove temporary namespace link")
+		m.logger.V(2).Error(err, "Failed to remove temporary namespace link", "nsPath", nsPath)
 	}
 }
 
@@ -1072,10 +1051,10 @@ func (m *Manager) writeToFile(filepath, content string) error {
 		return fmt.Errorf("failed to write to file %s: %v", filepath, err)
 	}
 
-	m.logger.WithFields(logrus.Fields{
-		"file":    filepath,
-		"content": content,
-	}).Debug("Wrote content to file")
+	m.logger.V(2).Info("Wrote content to file",
+		"file", filepath,
+		"content", content,
+	)
 
 	return nil
 }
@@ -1088,10 +1067,10 @@ func (m *Manager) readFromFile(filepath string) (string, error) {
 	}
 
 	result := strings.TrimSpace(string(content))
-	m.logger.WithFields(logrus.Fields{
-		"file":    filepath,
-		"content": result,
-	}).Debug("Read content from file")
+	m.logger.V(2).Info("Read content from file",
+		"file", filepath,
+		"content", result,
+	)
 
 	return result, nil
 }
@@ -1156,7 +1135,7 @@ func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) err
 		return fmt.Errorf("failed to create bridge: %v", err)
 	}
 
-	m.logger.WithField("bridge", bridgeName).Info("Created OVS bridge")
+	m.logger.V(3).Info("Created OVS bridge", "bridge", bridgeName)
 	return nil
 }
 

@@ -137,13 +137,12 @@ The application uses the following default values:
 
 ## Logging
 
-The application uses structured logging (logrus) with the following levels:
-- `debug`: Detailed command execution logs
-- `info`: General operation logs
-- `warn`: Warning messages
-- `error`: Error messages
+The application uses structured logging (logr) with the following levels:
+- `V(2)`: Detailed operation logs (debug level)
+- `Info`: General operation logs
+- `Error`: Error messages
 
-To enable debug logging, modify the log level in the source code or use environment variables.
+To enable debug logging, set the verbosity level when creating the logger in your environment.
 
 ## Security Considerations
 
@@ -161,10 +160,15 @@ To enable debug logging, modify the log level in the source code or use environm
 
 ### Debug Mode
 
-To enable verbose logging, modify the log level in `main.go`:
+To enable verbose logging, configure the logger verbosity level when creating the logr logger:
 
 ```go
-logger.SetLevel(logrus.DebugLevel)
+// Example: Create a logger with debug level verbosity
+zapLogger, err := zap.NewProduction()
+if err != nil {
+    panic(err)
+}
+logger := zapr.NewLogger(zapLogger).V(2) // V(2) enables debug-level logs
 ```
 
 ### Manual Cleanup

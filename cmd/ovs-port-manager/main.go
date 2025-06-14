@@ -7,7 +7,8 @@ import (
 	"syscall"
 
 	"github.com/appkins-org/ovs-port-manager/internal/manager"
-	"github.com/sirupsen/logrus"
+	"github.com/go-logr/zapr"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -23,20 +24,24 @@ func main() {
 		cancel()
 	}()
 
-	log := logrus.New()
-	log.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
-	})
-	log.SetLevel(logrus.InfoLevel)
-	log.SetOutput(os.Stdout)
+	// Create a logr logger using zap
+	zapLogger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	defer zapLogger.Sync()
+
+	logger := zapr.NewLogger(zapLogger)
 
 	// Create and start the OVS port manager
-	manager, err := manager.New(log)
+	manager, err := manager.New(logger)
 	if err != nil {
-		log.WithError(err).Fatal("Failed to create OVS port manager")
+		logger.Error(err, "Failed to create OVS port manager")
+		os.Exit(1)
 	}
 
 	if err := manager.Start(ctx); err != nil {
-		log.WithError(err).Fatal("OVS port manager failed")
+		logger.Error(err, "OVS port manager failed")
+		os.Exit(1)
 	}
 }
