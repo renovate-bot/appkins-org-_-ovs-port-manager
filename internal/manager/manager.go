@@ -722,8 +722,12 @@ func (m *Manager) addPortToBridge(
 		return fmt.Errorf("failed to create veth pair %s<->%s: %v", hostSide, containerSide, err)
 	}
 
-	// Step 4: Add host side to OVS bridge (mirroring: ovs-vsctl --may-exist add-port "$BRIDGE" "${PORTNAME}_l")
-	if err := m.addPortToOVSBridge(ctx, bridge, hostSide); err != nil {
+	// Step 4: Add host side to OVS bridge with external IDs (mirroring: ovs-vsctl --may-exist add-port "$BRIDGE" "${PORTNAME}_l")
+	externalIDs := map[string]string{
+		"container_id":    containerID,
+		"container_iface": interfaceName,
+	}
+	if err := m.addPortToOVSBridge(ctx, bridge, hostSide, externalIDs); err != nil {
 		// Cleanup veth pair on failure (mirroring: ip link delete "${PORTNAME}_l")
 		if err := m.deleteLinkByName(hostSide); err != nil {
 			m.logger.V(1).Info("Failed to delete link during cleanup", "error", err)
@@ -731,19 +735,7 @@ func (m *Manager) addPortToBridge(
 		return fmt.Errorf("failed to add %s port to bridge %s: %v", hostSide, bridge, err)
 	}
 
-	// Step 5: Set external_ids (mirroring: ovs-vsctl set interface "${PORTNAME}_l" external_ids:...)
-	if err := m.setInterfaceExternalIDs(ctx, hostSide, containerID, interfaceName); err != nil {
-		// Cleanup on failure
-		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
-			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)
-		}
-		if err := m.deleteLinkByName(hostSide); err != nil {
-			m.logger.V(1).Info("Failed to delete link during cleanup", "error", err)
-		}
-		return fmt.Errorf("failed to set external IDs on interface %s: %v", hostSide, err)
-	}
-
-	// Step 6: Set host side link up (mirroring: ip link set "${PORTNAME}_l" up)
+	// Step 5: Set host side link up (mirroring: ip link set "${PORTNAME}_l" up)
 	if err := m.setLinkUp(hostSide); err != nil {
 		// Cleanup on failure
 		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
@@ -782,47 +774,6 @@ func (m *Manager) createVethPairWithNames(hostName, containerName string) error 
 		"host_side", hostName,
 		"container_side", containerName,
 	)
-
-	return nil
-}
-
-// setInterfaceExternalIDs sets external IDs on an OVS interface
-// This mirrors: ovs-vsctl set interface "$INTERFACE" external_ids:container_id="$CONTAINER" external_ids:container_iface="$IFACE".
-func (m *Manager) setInterfaceExternalIDs(
-	ctx context.Context,
-	interfaceName, containerID, containerInterface string,
-) error {
-	// Find the interface
-	var interfaces []models.Interface
-	err := m.ovsClient.WhereCache(func(i *models.Interface) bool {
-		return i.Name == interfaceName
-	}).List(ctx, &interfaces)
-	if err != nil {
-		return fmt.Errorf("failed to find interface %s: %v", interfaceName, err)
-	}
-
-	if len(interfaces) == 0 {
-		return fmt.Errorf("interface %s not found", interfaceName)
-	}
-
-	// Update external IDs
-	iface := &interfaces[0]
-	if iface.ExternalIDs == nil {
-		iface.ExternalIDs = make(map[string]string)
-	}
-	iface.ExternalIDs["container_id"] = containerID
-	iface.ExternalIDs["container_iface"] = containerInterface
-
-	// Update the interface
-	ops, err := m.ovsClient.Where(iface).Update(iface)
-	if err != nil {
-		return fmt.Errorf("failed to create update operation: %v", err)
-	}
-
-	_, err = m.ovsClient.Transact(ctx, ops...)
-	if err != nil {
-		return fmt.Errorf("failed to update interface external IDs: %v", err)
-	}
 
 	return nil
 }
@@ -1087,9 +1038,13 @@ func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) err
 	return nil
 }
 
-// addPortToOVSBridge adds a port to an OVS bridge
+// addPortToOVSBridge adds a port to an OVS bridge with optional external IDs
 // This mirrors: ovs-vsctl --may-exist add-port "$BRIDGE" "$PORT".
-func (m *Manager) addPortToOVSBridge(ctx context.Context, bridgeName, portName string) error {
+func (m *Manager) addPortToOVSBridge(
+	ctx context.Context,
+	bridgeName, portName string,
+	externalIDs ...map[string]string,
+) error {
 	// Find the bridge
 	var bridges []models.Bridge
 	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
@@ -1105,12 +1060,18 @@ func (m *Manager) addPortToOVSBridge(ctx context.Context, bridgeName, portName s
 
 	bridge := &bridges[0]
 
+	// Prepare external IDs
+	interfaceExternalIDs := map[string]string{}
+	if len(externalIDs) > 0 {
+		interfaceExternalIDs = externalIDs[0]
+	}
+
 	// Create Interface record
 	iface := &models.Interface{
 		UUID:        "new-interface-add", // Named UUID for transaction
 		Name:        portName,
 		Type:        "",
-		ExternalIDs: map[string]string{},
+		ExternalIDs: interfaceExternalIDs,
 	}
 
 	// Create Port record
