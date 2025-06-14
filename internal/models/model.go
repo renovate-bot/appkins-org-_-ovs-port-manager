@@ -10,7 +10,7 @@ import (
 	"github.com/ovn-org/libovsdb/ovsdb"
 )
 
-// FullDatabaseModel returns the DatabaseModel object to be used in libovsdb
+// FullDatabaseModel returns the DatabaseModel object to be used in libovsdb.
 func FullDatabaseModel() (model.ClientDBModel, error) {
 	return model.NewClientDBModel("Open_vSwitch", map[string]model.Model{
 		"AutoAttach":                &AutoAttach{},

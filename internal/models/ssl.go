@@ -5,7 +5,7 @@ package models
 
 const SSLTable = "SSL"
 
-// SSL defines an object in SSL table
+// SSL defines an object in SSL table.
 type SSL struct {
 	UUID            string            `ovsdb:"_uuid"`
 	BootstrapCaCert bool              `ovsdb:"bootstrap_ca_cert"`

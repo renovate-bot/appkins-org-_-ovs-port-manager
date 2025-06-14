@@ -1,6 +1,16 @@
 ---
 applyTo: '**/*_test.go'
 ---
+## Testing conventions
+
+- All new packages and most new significant functionality must come with unit tests.
+- Table-driven tests are preferred for testing multiple scenarios/inputs. For an example, see TestNamespaceAuthorization.
+- Significant features should come with integration (test/integration) and/or end-to-end (test/e2e) tests.
+- Including new kubectl commands and major features of existing commands.
+- Unit tests must pass on macOS and Windows platforms - if you use Linux specific features, your test case must either be skipped on windows or compiled out (skipped is better when running Linux specific commands, compiled out is required when your code does not compile on Windows).
+- Avoid relying on Docker Hub. Use the Google Cloud Artifact Registry instead.
+- Do not expect an asynchronous thing to happen immediately—do not wait for one second and expect a pod to be running. Wait and retry instead.
+
 ## Use table-drive tests, and consistently use tt for a test case
 
 Try to use table-driven tests whenever feasible, but it’s okay to just copy some code when it’s not; don’t force it (e.g. sometimes it’s easier to write a table-driven test for all but one or two cases; be practical).

@@ -29,7 +29,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer zapLogger.Sync()
+	defer func() {
+		// Ignore sync errors - they're common in containers and not critical
+		_ = zapLogger.Sync()
+	}()
 
 	logger := zapr.NewLogger(zapLogger)
 

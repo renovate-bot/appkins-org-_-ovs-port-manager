@@ -40,7 +40,12 @@ func TestGeneratePortName(t *testing.T) {
 			// Verify the name with suffix doesn't exceed the limit
 			peerName := result + "_c"
 			if len(peerName) > InterfaceNameLimit {
-				t.Errorf("Peer name %s length %d exceeds limit %d", peerName, len(peerName), InterfaceNameLimit)
+				t.Errorf(
+					"Peer name %s length %d exceeds limit %d",
+					peerName,
+					len(peerName),
+					InterfaceNameLimit,
+				)
 			}
 		})
 	}
@@ -68,12 +73,21 @@ func TestPortNameLengthLimits(t *testing.T) {
 
 			// Verify peer name doesn't exceed kernel limit
 			if len(peerName) > InterfaceNameLimit {
-				t.Errorf("Peer name %s length %d exceeds kernel limit %d", peerName, len(peerName), InterfaceNameLimit)
+				t.Errorf(
+					"Peer name %s length %d exceeds kernel limit %d",
+					peerName,
+					len(peerName),
+					InterfaceNameLimit,
+				)
 			}
 
 			// Verify port name matches the first 12 chars of container ID
 			if portName != containerID[:12] {
-				t.Errorf("Port name %s doesn't match container ID prefix %s", portName, containerID[:12])
+				t.Errorf(
+					"Port name %s doesn't match container ID prefix %s",
+					portName,
+					containerID[:12],
+				)
 			}
 		})
 	}
@@ -90,24 +104,39 @@ func TestOVSDockerMirroringBehavior(t *testing.T) {
 			expectedName string
 		}{
 			{"1322aba3640c7f3e8b9c123456789abc", "1322aba3640c"}, // Standard case
-			{"abc123def456", "abc123def456"},                      // Exactly 12 chars
-			{"short", "short"},                                    // Less than 12 chars
+			{"abc123def456", "abc123def456"},                     // Exactly 12 chars
+			{"short", "short"},                                   // Less than 12 chars
 		}
 
 		for _, tc := range testCases {
 			result := m.generatePortName(tc.containerID)
 			if result != tc.expectedName {
-				t.Errorf("generatePortName(%s) = %s, want %s", tc.containerID, result, tc.expectedName)
+				t.Errorf(
+					"generatePortName(%s) = %s, want %s",
+					tc.containerID,
+					result,
+					tc.expectedName,
+				)
 			}
 
 			// Verify it stays under the kernel interface name limit when suffixed
 			hostSide := result + "_l"
 			containerSide := result + "_c"
 			if len(hostSide) > InterfaceNameLimit {
-				t.Errorf("Host side name %s (%d chars) exceeds limit %d", hostSide, len(hostSide), InterfaceNameLimit)
+				t.Errorf(
+					"Host side name %s (%d chars) exceeds limit %d",
+					hostSide,
+					len(hostSide),
+					InterfaceNameLimit,
+				)
 			}
 			if len(containerSide) > InterfaceNameLimit {
-				t.Errorf("Container side name %s (%d chars) exceeds limit %d", containerSide, len(containerSide), InterfaceNameLimit)
+				t.Errorf(
+					"Container side name %s (%d chars) exceeds limit %d",
+					containerSide,
+					len(containerSide),
+					InterfaceNameLimit,
+				)
 			}
 		}
 	})

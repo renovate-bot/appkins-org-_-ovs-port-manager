@@ -5,7 +5,7 @@ package models
 
 const NetFlowTable = "NetFlow"
 
-// NetFlow defines an object in NetFlow table
+// NetFlow defines an object in NetFlow table.
 type NetFlow struct {
 	UUID             string            `ovsdb:"_uuid"`
 	ActiveTimeout    int               `ovsdb:"active_timeout"`

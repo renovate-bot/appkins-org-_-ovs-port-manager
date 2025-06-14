@@ -5,7 +5,7 @@ package models
 
 const FlowSampleCollectorSetTable = "Flow_Sample_Collector_Set"
 
-// FlowSampleCollectorSet defines an object in Flow_Sample_Collector_Set table
+// FlowSampleCollectorSet defines an object in Flow_Sample_Collector_Set table.
 type FlowSampleCollectorSet struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Bridge      string            `ovsdb:"bridge"`

@@ -29,8 +29,14 @@ func TestLoad(t *testing.T) {
 
 func TestEnvironmentOverride(t *testing.T) {
 	// Set environment variable
-	os.Setenv("OVS_DB", "TestDatabase")
-	defer os.Unsetenv("OVS_DB")
+	if err := os.Setenv("OVS_DB", "TestDatabase"); err != nil {
+		t.Fatalf("Failed to set environment variable: %v", err)
+	}
+	defer func() {
+		if err := os.Unsetenv("OVS_DB"); err != nil {
+			t.Errorf("Failed to unset environment variable: %v", err)
+		}
+	}()
 
 	config, err := Load()
 	if err != nil {
@@ -44,12 +50,24 @@ func TestEnvironmentOverride(t *testing.T) {
 
 func TestViperEnvironmentOverride(t *testing.T) {
 	// Set viper environment variable (note: viper converts nested keys)
-	os.Setenv("OVS_PORT_MANAGER_OVS_DEFAULT_BRIDGE", "custom_bridge")
-	defer os.Unsetenv("OVS_PORT_MANAGER_OVS_DEFAULT_BRIDGE")
+	if err := os.Setenv("OVS_PORT_MANAGER_OVS_DEFAULT_BRIDGE", "custom_bridge"); err != nil {
+		t.Fatalf("Failed to set environment variable: %v", err)
+	}
+	defer func() {
+		if err := os.Unsetenv("OVS_PORT_MANAGER_OVS_DEFAULT_BRIDGE"); err != nil {
+			t.Errorf("Failed to unset environment variable: %v", err)
+		}
+	}()
 
 	// Also try the alternative format
-	os.Setenv("OVS_PORT_MANAGER_OVS__DEFAULT_BRIDGE", "custom_bridge")
-	defer os.Unsetenv("OVS_PORT_MANAGER_OVS__DEFAULT_BRIDGE")
+	if err := os.Setenv("OVS_PORT_MANAGER_OVS__DEFAULT_BRIDGE", "custom_bridge"); err != nil {
+		t.Fatalf("Failed to set environment variable: %v", err)
+	}
+	defer func() {
+		if err := os.Unsetenv("OVS_PORT_MANAGER_OVS__DEFAULT_BRIDGE"); err != nil {
+			t.Errorf("Failed to unset environment variable: %v", err)
+		}
+	}()
 
 	config, err := Load()
 	if err != nil {
@@ -71,8 +89,8 @@ func TestConfigDefaults(t *testing.T) {
 	// Test all default values
 	tests := []struct {
 		name     string
-		actual   interface{}
-		expected interface{}
+		actual   any
+		expected any
 	}{
 		{"DatabaseName", config.OVS.DatabaseName, "Open_vSwitch"},
 		{"SocketPath", config.OVS.SocketPath, "/var/run/openvswitch/db.sock"},

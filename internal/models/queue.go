@@ -5,7 +5,7 @@ package models
 
 const QueueTable = "Queue"
 
-// Queue defines an object in Queue table
+// Queue defines an object in Queue table.
 type Queue struct {
 	UUID        string            `ovsdb:"_uuid"`
 	DSCP        *int              `ovsdb:"dscp"`

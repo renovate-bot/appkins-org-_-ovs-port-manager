@@ -5,7 +5,7 @@ package models
 
 const SFlowTable = "sFlow"
 
-// SFlow defines an object in sFlow table
+// SFlow defines an object in sFlow table.
 type SFlow struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Agent       *string           `ovsdb:"agent"`

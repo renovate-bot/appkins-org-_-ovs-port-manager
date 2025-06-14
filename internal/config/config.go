@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config holds all configuration settings for the OVS Port Manager
+// Config holds all configuration settings for the OVS Port Manager.
 type Config struct {
 	// OVS Database settings
 	OVS OVSConfig `mapstructure:"ovs"`
@@ -25,7 +25,7 @@ type Config struct {
 	Server ServerConfig `mapstructure:"server"`
 }
 
-// OVSConfig contains OVS-specific configuration
+// OVSConfig contains OVS-specific configuration.
 type OVSConfig struct {
 	// Database name (default: "Open_vSwitch")
 	DatabaseName string `mapstructure:"database_name"`
@@ -43,7 +43,7 @@ type OVSConfig struct {
 	DefaultInterface string `mapstructure:"default_interface"`
 }
 
-// DockerConfig contains Docker-specific configuration
+// DockerConfig contains Docker-specific configuration.
 type DockerConfig struct {
 	// Socket path for Docker daemon
 	SocketPath string `mapstructure:"socket_path"`
@@ -55,7 +55,7 @@ type DockerConfig struct {
 	ConnectionTimeout time.Duration `mapstructure:"connection_timeout"`
 }
 
-// NetworkConfig contains network-specific configuration
+// NetworkConfig contains network-specific configuration.
 type NetworkConfig struct {
 	// Default MTU for interfaces
 	DefaultMTU int `mapstructure:"default_mtu"`
@@ -67,7 +67,7 @@ type NetworkConfig struct {
 	HandleNetNS bool `mapstructure:"handle_netns"`
 }
 
-// LoggingConfig contains logging configuration
+// LoggingConfig contains logging configuration.
 type LoggingConfig struct {
 	// Log level (debug, info, warn, error)
 	Level string `mapstructure:"level"`
@@ -82,7 +82,7 @@ type LoggingConfig struct {
 	FilePath string `mapstructure:"file_path"`
 }
 
-// ServerConfig contains server-specific configuration
+// ServerConfig contains server-specific configuration.
 type ServerConfig struct {
 	// Enable metrics endpoint
 	EnableMetrics bool `mapstructure:"enable_metrics"`
@@ -97,7 +97,7 @@ type ServerConfig struct {
 	HealthAddr string `mapstructure:"health_addr"`
 }
 
-// Load loads configuration from environment variables, config files, and defaults
+// Load loads configuration from environment variables, config files, and defaults.
 func Load() (*Config, error) {
 	v := viper.New()
 
@@ -132,17 +132,23 @@ func Load() (*Config, error) {
 	return &config, nil
 }
 
-// setDefaults sets default configuration values
+// setDefaults sets default configuration values.
 func setDefaults(v *viper.Viper) {
 	// OVS defaults
 	v.SetDefault("ovs.database_name", getEnvOrDefault("OVS_DB", "Open_vSwitch"))
-	v.SetDefault("ovs.socket_path", getEnvOrDefault("OVS_SOCKET_PATH", "/var/run/openvswitch/db.sock"))
+	v.SetDefault(
+		"ovs.socket_path",
+		getEnvOrDefault("OVS_SOCKET_PATH", "/var/run/openvswitch/db.sock"),
+	)
 	v.SetDefault("ovs.connection_timeout", 30*time.Second)
 	v.SetDefault("ovs.default_bridge", getEnvOrDefault("OVS_DEFAULT_BRIDGE", "ovs_bond0"))
 	v.SetDefault("ovs.default_interface", getEnvOrDefault("OVS_DEFAULT_INTERFACE", "bond0"))
 
 	// Docker defaults
-	v.SetDefault("docker.socket_path", getEnvOrDefault("DOCKER_SOCKET_PATH", "/var/run/docker.sock"))
+	v.SetDefault(
+		"docker.socket_path",
+		getEnvOrDefault("DOCKER_SOCKET_PATH", "/var/run/docker.sock"),
+	)
 	v.SetDefault("docker.api_version", "")
 	v.SetDefault("docker.connection_timeout", 30*time.Second)
 
@@ -164,7 +170,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.health_addr", ":8081")
 }
 
-// getEnvOrDefault gets an environment variable or returns a default value
+// getEnvOrDefault gets an environment variable or returns a default value.
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -172,7 +178,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// Validate validates the configuration
+// Validate validates the configuration.
 func (c *Config) Validate() error {
 	// Add validation logic here if needed
 	return nil

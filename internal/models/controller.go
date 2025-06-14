@@ -18,7 +18,7 @@ var (
 	ControllerRoleSlave               ControllerRole           = "slave"
 )
 
-// Controller defines an object in Controller table
+// Controller defines an object in Controller table.
 type Controller struct {
 	UUID                 string                    `ovsdb:"_uuid"`
 	ConnectionMode       *ControllerConnectionMode `ovsdb:"connection_mode"`

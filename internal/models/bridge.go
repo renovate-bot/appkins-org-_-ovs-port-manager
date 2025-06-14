@@ -21,7 +21,7 @@ var (
 	BridgeProtocolsOpenflow15 BridgeProtocols = "OpenFlow15"
 )
 
-// Bridge defines an object in Bridge table
+// Bridge defines an object in Bridge table.
 type Bridge struct {
 	UUID                string            `ovsdb:"_uuid"`
 	AutoAttach          *string           `ovsdb:"auto_attach"`

@@ -5,7 +5,7 @@ package models
 
 const QoSTable = "QoS"
 
-// QoS defines an object in QoS table
+// QoS defines an object in QoS table.
 type QoS struct {
 	UUID        string            `ovsdb:"_uuid"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`

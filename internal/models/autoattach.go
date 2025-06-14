@@ -5,7 +5,7 @@ package models
 
 const AutoAttachTable = "AutoAttach"
 
-// AutoAttach defines an object in AutoAttach table
+// AutoAttach defines an object in AutoAttach table.
 type AutoAttach struct {
 	UUID              string      `ovsdb:"_uuid"`
 	Mappings          map[int]int `ovsdb:"mappings"`

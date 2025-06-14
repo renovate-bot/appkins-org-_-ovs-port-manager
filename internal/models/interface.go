@@ -23,7 +23,7 @@ var (
 	InterfaceLinkStateUp          InterfaceLinkState        = "up"
 )
 
-// Interface defines an object in Interface table
+// Interface defines an object in Interface table.
 type Interface struct {
 	UUID                 string                     `ovsdb:"_uuid"`
 	AdminState           *InterfaceAdminState       `ovsdb:"admin_state"`

@@ -5,7 +5,7 @@ package models
 
 const OpenvSwitchTable = "Open_vSwitch"
 
-// OpenvSwitch defines an object in Open_vSwitch table
+// OpenvSwitch defines an object in Open_vSwitch table.
 type OpenvSwitch struct {
 	UUID           string            `ovsdb:"_uuid"`
 	Bridges        []string          `ovsdb:"bridges"`

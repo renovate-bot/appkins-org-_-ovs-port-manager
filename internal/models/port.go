@@ -24,7 +24,7 @@ var (
 	PortVLANModeTrunk          PortVLANMode = "trunk"
 )
 
-// Port defines an object in Port table
+// Port defines an object in Port table.
 type Port struct {
 	UUID            string            `ovsdb:"_uuid"`
 	BondActiveSlave *string           `ovsdb:"bond_active_slave"`

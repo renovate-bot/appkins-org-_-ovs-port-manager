@@ -5,7 +5,7 @@ package models
 
 const IPFIXTable = "IPFIX"
 
-// IPFIX defines an object in IPFIX table
+// IPFIX defines an object in IPFIX table.
 type IPFIX struct {
 	UUID               string            `ovsdb:"_uuid"`
 	CacheActiveTimeout *int              `ovsdb:"cache_active_timeout"`

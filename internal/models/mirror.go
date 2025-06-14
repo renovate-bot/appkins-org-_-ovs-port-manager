@@ -5,7 +5,7 @@ package models
 
 const MirrorTable = "Mirror"
 
-// Mirror defines an object in Mirror table
+// Mirror defines an object in Mirror table.
 type Mirror struct {
 	UUID          string            `ovsdb:"_uuid"`
 	ExternalIDs   map[string]string `ovsdb:"external_ids"`

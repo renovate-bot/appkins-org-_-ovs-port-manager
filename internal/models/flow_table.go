@@ -14,7 +14,7 @@ var (
 	FlowTableOverflowPolicyRefuse FlowTableOverflowPolicy = "refuse"
 )
 
-// FlowTable defines an object in Flow_Table table
+// FlowTable defines an object in Flow_Table table.
 type FlowTable struct {
 	UUID           string                   `ovsdb:"_uuid"`
 	ExternalIDs    map[string]string        `ovsdb:"external_ids"`

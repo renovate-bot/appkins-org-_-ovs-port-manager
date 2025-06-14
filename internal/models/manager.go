@@ -14,7 +14,7 @@ var (
 	ManagerConnectionModeOutOfBand ManagerConnectionMode = "out-of-band"
 )
 
-// Manager defines an object in Manager table
+// Manager defines an object in Manager table.
 type Manager struct {
 	UUID            string                 `ovsdb:"_uuid"`
 	ConnectionMode  *ManagerConnectionMode `ovsdb:"connection_mode"`
