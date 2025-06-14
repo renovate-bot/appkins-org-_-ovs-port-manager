@@ -355,7 +355,7 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	}
 
 	if len(ports) == 0 {
-		m.logger.V(3).V(2).Info("No OVS ports found for container", "container_id", containerID[:12])
+		m.logger.V(3).Info("No OVS ports found for container", "container_id", containerID[:12])
 		return nil
 	}
 
@@ -408,7 +408,7 @@ func (m *Manager) generatePortName(containerID string) string {
 	if len(portName+"_c") > InterfaceNameLimit {
 		m.logger.V(1).Error(nil, "Generated port name may exceed kernel interface name limit",
 			"portName", portName,
-			"length", len(portName + "_c"),
+			"length", len(portName+"_c"),
 			"limit", InterfaceNameLimit)
 	}
 
@@ -431,7 +431,7 @@ func (m *Manager) createVethPair(portName string) error {
 		return fmt.Errorf("failed to create veth pair %s<->%s: %v", portName, peerName, err)
 	}
 
-	m.logger.V(2).Info("Created veth pair",
+	m.logger.V(3).Info("Created veth pair",
 		"host_side", portName,
 		"container_side", peerName)
 
@@ -463,7 +463,7 @@ func (m *Manager) moveLinkToNetns(interfaceName string, pid int) error {
 		return fmt.Errorf("failed to move link %s to netns %d: %v", interfaceName, pid, err)
 	}
 
-	m.logger.V(2).Info("Moved interface to container namespace",
+	m.logger.V(3).Info("Moved interface to container namespace",
 		"interface", interfaceName,
 		"pid", pid)
 
@@ -584,7 +584,7 @@ func (m *Manager) configureInterfaceInNetns(pid int, oldName, newName, ipAddr, m
 		}
 	}
 
-	m.logger.V(2).Info("Configured interface in container",
+	m.logger.V(3).Info("Configured interface in container",
 		"interface", newName,
 		"ip", ipAddr,
 		"mac", macAddr,
@@ -609,7 +609,7 @@ func (m *Manager) deleteLinkByName(interfaceName string) error {
 		return fmt.Errorf("failed to delete link %s: %v", interfaceName, err)
 	}
 
-	m.logger.V(3).V(2).Info("Deleted network interface", "interface", interfaceName)
+	m.logger.V(3).Info("Deleted network interface", "interface", interfaceName)
 	return nil
 }
 
@@ -692,7 +692,7 @@ func (m *Manager) createVethPairWithNames(hostName, containerName string) error 
 		return fmt.Errorf("failed to create veth pair: %v", err)
 	}
 
-	m.logger.V(2).Info("Created veth pair",
+	m.logger.V(3).Info("Created veth pair",
 		"host_side", hostName,
 		"container_side", containerName,
 	)
@@ -894,7 +894,7 @@ func (m *Manager) findPortsForContainer(ctx context.Context, containerID string)
 		portNames = append(portNames, iface.Name)
 	}
 
-	m.logger.V(2).Info("Found ports for container",
+	m.logger.V(3).Info("Found ports for container",
 		"container_id", containerID[:12],
 		"port_count", len(portNames),
 		"ports", portNames,
@@ -915,7 +915,7 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 	}
 
 	if len(ports) == 0 {
-		m.logger.V(3).V(2).Info("Port not found in OVS database", "port", portName)
+		m.logger.V(3).Info("Port not found in OVS database", "port", portName)
 		return nil
 	}
 
@@ -975,7 +975,7 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 		}
 	}
 
-	m.logger.V(2).Info("Cleaned up OVS port", "port", portName)
+	m.logger.V(3).Info("Cleaned up OVS port", "port", portName)
 	return nil
 }
 
@@ -991,7 +991,7 @@ func (m *Manager) ensureNetnsDirectory() error {
 		if err := os.MkdirAll(netnsDir, 0755); err != nil {
 			return fmt.Errorf("failed to create netns directory %s: %v", netnsDir, err)
 		}
-		m.logger.V(3).V(2).Info("Created netns directory", "directory", netnsDir)
+		m.logger.V(3).Info("Created netns directory", "directory", netnsDir)
 	}
 	return nil
 }
@@ -1018,7 +1018,7 @@ func (m *Manager) createTempNamespaceLink(pid int) (string, error) {
 		return "", fmt.Errorf("failed to create namespace link: %v", err)
 	}
 
-	m.logger.V(2).Info("Created temporary namespace link",
+	m.logger.V(3).Info("Created temporary namespace link",
 		"pid", pid,
 		"nsPath", nsPath,
 	)
@@ -1029,7 +1029,7 @@ func (m *Manager) createTempNamespaceLink(pid int) (string, error) {
 // removeTempNamespaceLink removes a temporary namespace link
 func (m *Manager) removeTempNamespaceLink(nsPath string) {
 	if err := os.Remove(nsPath); err != nil {
-		m.logger.V(2).Error(err, "Failed to remove temporary namespace link", "nsPath", nsPath)
+		m.logger.V(3).Error(err, "Failed to remove temporary namespace link", "nsPath", nsPath)
 	}
 }
 
@@ -1051,7 +1051,7 @@ func (m *Manager) writeToFile(filepath, content string) error {
 		return fmt.Errorf("failed to write to file %s: %v", filepath, err)
 	}
 
-	m.logger.V(2).Info("Wrote content to file",
+	m.logger.V(3).Info("Wrote content to file",
 		"file", filepath,
 		"content", content,
 	)
@@ -1067,7 +1067,7 @@ func (m *Manager) readFromFile(filepath string) (string, error) {
 	}
 
 	result := strings.TrimSpace(string(content))
-	m.logger.V(2).Info("Read content from file",
+	m.logger.V(3).Info("Read content from file",
 		"file", filepath,
 		"content", result,
 	)
