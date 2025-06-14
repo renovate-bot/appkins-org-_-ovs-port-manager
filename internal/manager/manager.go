@@ -1113,9 +1113,13 @@ func (m *Manager) getPortForContainerInterface(ctx context.Context, containerID,
 func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) error {
 	// Check if bridge exists
 	var bridges []models.Bridge
-	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
-		return b.Name == bridgeName
-	}).List(ctx, &bridges)
+
+	err := m.ovsClient.List(ctx, &bridges)
+
+	// err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
+	// 	return b.Name == bridgeName
+	// }).List(ctx, &bridges)
+
 	if err != nil {
 		return fmt.Errorf("failed to check if bridge exists: %v", err)
 	}
