@@ -28,11 +28,11 @@ jobs:
       - name: Build Docker image for ${{ matrix.platform }}
         uses: docker/build-push-action@v6
         with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          file: build/package/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: false
           tags: ovs-port-manager:test-${{ matrix.platform }}
 
       - name: Test image functionality
