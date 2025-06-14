@@ -172,7 +172,7 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 	// Check if the bridge already exists
 	var bridges []models.Bridge
-	err := m.ovsClient.Where(func(b *models.Bridge) bool {
+	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
 		return b.Name == m.config.OVS.DefaultBridge
 	}).List(ctx, &bridges)
 	if err != nil {
@@ -779,7 +779,7 @@ func (m *Manager) addPortToOVSBridgeCommand(bridge, portName string) error {
 func (m *Manager) setInterfaceExternalIDs(ctx context.Context, interfaceName, containerID, containerInterface string) error {
 	// Find the interface
 	var interfaces []models.Interface
-	err := m.ovsClient.Where(func(i *models.Interface) bool {
+	err := m.ovsClient.WhereCache(func(i *models.Interface) bool {
 		return i.Name == interfaceName
 	}).List(ctx, &interfaces)
 	if err != nil {
@@ -897,7 +897,7 @@ func (m *Manager) configureContainerInterface(containerID, containerSideName str
 func (m *Manager) findPortsForContainer(ctx context.Context, containerID string) ([]string, error) {
 	// Find interfaces by container_id external_id (this is how ovs-docker works)
 	var interfaces []models.Interface
-	err := m.ovsClient.Where(func(i *models.Interface) bool {
+	err := m.ovsClient.WhereCache(func(i *models.Interface) bool {
 		containerIDValue, exists := i.ExternalIDs["container_id"]
 		return exists && containerIDValue == containerID
 	}).List(ctx, &interfaces)
@@ -924,7 +924,7 @@ func (m *Manager) findPortsForContainer(ctx context.Context, containerID string)
 func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) error {
 	// Find all ports with this name
 	var ports []models.Port
-	err := m.ovsClient.Where(func(p *models.Port) bool {
+	err := m.ovsClient.WhereCache(func(p *models.Port) bool {
 		return p.Name == portName
 	}).List(ctx, &ports)
 	if err != nil {
@@ -941,7 +941,7 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 	for _, port := range ports {
 		for _, ifaceUUID := range port.Interfaces {
 			var ifaces []models.Interface
-			err := m.ovsClient.Where(func(i *models.Interface) bool {
+			err := m.ovsClient.WhereCache(func(i *models.Interface) bool {
 				return i.UUID == ifaceUUID
 			}).List(ctx, &ifaces)
 			if err != nil {
@@ -1096,7 +1096,7 @@ func (m *Manager) readFromFile(filepath string) (string, error) {
 // This mirrors the get_port_for_container_interface function from ovs-docker
 func (m *Manager) getPortForContainerInterface(ctx context.Context, containerID, interfaceName string) (string, error) {
 	var interfaces []models.Interface
-	err := m.ovsClient.Where(func(i *models.Interface) bool {
+	err := m.ovsClient.WhereCache(func(i *models.Interface) bool {
 		containerIDMatch := i.ExternalIDs["container_id"] == containerID
 		interfaceMatch := i.ExternalIDs["container_iface"] == interfaceName
 		return containerIDMatch && interfaceMatch
@@ -1118,7 +1118,7 @@ func (m *Manager) getPortForContainerInterface(ctx context.Context, containerID,
 func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) error {
 	// Check if bridge exists
 	var bridges []models.Bridge
-	err := m.ovsClient.Where(func(b *models.Bridge) bool {
+	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
 		return b.Name == bridgeName
 	}).List(ctx, &bridges)
 	if err != nil {
@@ -1157,7 +1157,7 @@ func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) err
 func (m *Manager) addPortToOVSBridge(ctx context.Context, bridgeName, portName string) error {
 	// Find the bridge
 	var bridges []models.Bridge
-	err := m.ovsClient.Where(func(b *models.Bridge) bool {
+	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
 		return b.Name == bridgeName
 	}).List(ctx, &bridges)
 	if err != nil {
