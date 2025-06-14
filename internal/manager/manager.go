@@ -79,10 +79,22 @@ func New() (*Manager, error) {
 
 	// Create OVS database client with configurable database name
 	clientDBModel, err := model.NewClientDBModel(cfg.OVS.DatabaseName, map[string]model.Model{
-		"Bridge":       &models.Bridge{},
-		"Port":         &models.Port{},
-		"Interface":    &models.Interface{},
-		"Open_vSwitch": &models.OpenvSwitch{},
+		"AutoAttach":                &models.AutoAttach{},
+		"Bridge":                    &models.Bridge{},
+		"Controller":                &models.Controller{},
+		"Flow_Sample_Collector_Set": &models.FlowSampleCollectorSet{},
+		"Flow_Table":                &models.FlowTable{},
+		"IPFIX":                     &models.IPFIX{},
+		"Interface":                 &models.Interface{},
+		"Manager":                   &models.Manager{},
+		"Mirror":                    &models.Mirror{},
+		"NetFlow":                   &models.NetFlow{},
+		"Open_vSwitch":              &models.OpenvSwitch{},
+		"Port":                      &models.Port{},
+		"QoS":                       &models.QoS{},
+		"Queue":                     &models.Queue{},
+		"SSL":                       &models.SSL{},
+		"sFlow":                     &models.SFlow{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OVS schema: %v", err)
