@@ -116,12 +116,31 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.ovsClient.Disconnect()
 	}()
 
+	// Set up monitoring to populate the cache
+	_, err := m.ovsClient.Monitor(
+		ctx,
+		m.ovsClient.NewMonitor(
+			client.WithTable(&models.OpenvSwitch{}),
+			client.WithTable(&models.Bridge{}),
+			client.WithTable(&models.Port{}),
+			client.WithTable(&models.Interface{}),
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to monitor OVS database: %v", err)
+	}
+
 	l := []models.OpenvSwitch{}
 	if err := m.ovsClient.List(ctx, &l); err != nil {
 		return fmt.Errorf("failed to list Open vSwitch: %v", err)
 	}
 
-	m.logger.V(1).Info("Connected to OVS database", "bridges", l[0].Bridges)
+	if len(l) == 0 {
+		m.logger.Info("No Open_vSwitch records found - this may indicate OVS is not fully initialized")
+		m.logger.Info("Continuing with bridge creation, but some operations may fail")
+	} else {
+		m.logger.V(1).Info("Connected to OVS database", "bridges", l[0].Bridges)
+	}
 
 	// Ensure default bridge exists
 	if err := m.ensureDefaultBridge(ctx); err != nil {
