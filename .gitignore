@@ -39,7 +39,8 @@ ovs-port-manager
 *.pid
 
 # Build artifacts
-/build/
+/build/*
+!/build/package/
 /dist/
 /tmp/
 
