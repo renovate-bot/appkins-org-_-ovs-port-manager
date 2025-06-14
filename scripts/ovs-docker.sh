@@ -51,9 +51,9 @@ get_port_for_container_interface () {
     CONTAINER="$1"
     INTERFACE="$2"
 
-    PORT=`ovs_vsctl --data=bare --no-heading --columns=name find interface \
+    PORT=$(ovs_vsctl --data=bare --no-heading --columns=name find interface \
              external_ids:container_id="$CONTAINER"  \
-             external_ids:container_iface="$INTERFACE"`
+             external_ids:container_iface="$INTERFACE")
     if [ -z "$PORT" ]; then
         echo >&2 "$UTIL: Failed to find any attached port" \
                  "for CONTAINER=$CONTAINER and INTERFACE=$INTERFACE"
@@ -75,19 +75,19 @@ add_port () {
     while [ $# -ne 0 ]; do
         case $1 in
             --ipaddress=*)
-                ADDRESS=`expr X"$1" : 'X[^=]*=\(.*\)'`
+                ADDRESS=$(expr X"$1" : 'X[^=]*=\(.*\)')
                 shift
                 ;;
             --macaddress=*)
-                MACADDRESS=`expr X"$1" : 'X[^=]*=\(.*\)'`
+                MACADDRESS=$(expr X"$1" : 'X[^=]*=\(.*\)')
                 shift
                 ;;
             --gateway=*)
-                GATEWAY=`expr X"$1" : 'X[^=]*=\(.*\)'`
+                GATEWAY=$(expr X"$1" : 'X[^=]*=\(.*\)')
                 shift
                 ;;
             --mtu=*)
-                MTU=`expr X"$1" : 'X[^=]*=\(.*\)'`
+                MTU=$(expr X"$1" : 'X[^=]*=\(.*\)')
                 shift
                 ;;
             *)
@@ -98,8 +98,8 @@ add_port () {
     done
 
     # Check if a port is already attached for the given container and interface
-    PORT=`get_port_for_container_interface "$CONTAINER" "$INTERFACE" \
-            2>/dev/null`
+    PORT=$(get_port_for_container_interface "$CONTAINER" "$INTERFACE" \
+            2>/dev/null)
     if [ -n "$PORT" ]; then
         echo >&2 "$UTIL: Port already attached" \
                  "for CONTAINER=$CONTAINER and INTERFACE=$INTERFACE"
@@ -112,7 +112,7 @@ add_port () {
         exit 1
     fi
 
-    if PID=`docker inspect -f '{{.State.Pid}}' "$CONTAINER"`; then :; else
+    if PID=$(docker inspect -f '{{.State.Pid}}' "$CONTAINER"); then :; else
         echo >&2 "$UTIL: Failed to get the PID of the container"
         exit 1
     fi
@@ -120,7 +120,7 @@ add_port () {
     create_netns_link
 
     # Create a veth pair.
-    ID=`uuidgen | sed 's/-//g'`
+    ID=$(uuidgen | sed 's/-//g')
     PORTNAME="${ID:0:13}"
     ip link add "${PORTNAME}_l" type veth peer name "${PORTNAME}_c"
 
@@ -129,7 +129,7 @@ add_port () {
        -- set interface "${PORTNAME}_l" \
        external_ids:container_id="$CONTAINER" \
        external_ids:container_iface="$INTERFACE"; then :; else
-        echo >&2 "$UTIL: Failed to add "${PORTNAME}_l" port to bridge $BRIDGE"
+        echo >&2 "$UTIL: Failed to add ""${PORTNAME}_l"" port to bridge $BRIDGE"
         ip link delete "${PORTNAME}_l"
         exit 1
     fi
@@ -168,7 +168,7 @@ del_port () {
         exit 1
     fi
 
-    PORT=`get_port_for_container_interface "$CONTAINER" "$INTERFACE"`
+    PORT=$(get_port_for_container_interface "$CONTAINER" "$INTERFACE")
     if [ -z "$PORT" ]; then
         exit 1
     fi
@@ -186,8 +186,8 @@ del_ports () {
         exit 1
     fi
 
-    PORTS=`ovs_vsctl --data=bare --no-heading --columns=name find interface \
-             external_ids:container_id="$CONTAINER"`
+    PORTS=$(ovs_vsctl --data=bare --no-heading --columns=name find interface \
+             external_ids:container_id="$CONTAINER")
     if [ -z "$PORTS" ]; then
         exit 0
     fi
@@ -209,7 +209,7 @@ set_vlan () {
         exit 1
     fi
 
-    PORT=`get_port_for_container_interface "$CONTAINER_ID" "$INTERFACE"`
+    PORT=$(get_port_for_container_interface "$CONTAINER_ID" "$INTERFACE")
     if [ -z "$PORT" ]; then
         exit 1
     fi
@@ -249,7 +249,7 @@ Options:
 EOF
 }
 
-UTIL=$(basename $0)
+UTIL=$(basename "$0")
 search_path ovs-vsctl
 search_path docker
 search_path uuidgen

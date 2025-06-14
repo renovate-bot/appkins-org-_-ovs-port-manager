@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/appkins-org/ovs-port-manager/internal/config"
 	"github.com/appkins-org/ovs-port-manager/internal/models"
@@ -582,13 +583,29 @@ func (m *Manager) configureInterfaceInNetns(
 
 	// Rename interface if needed
 	if newName != "" && oldName != newName {
+		// Check if target interface name already exists
+		if _, err := netlink.LinkByName(newName); err == nil {
+			return fmt.Errorf("interface %s already exists in container, cannot rename %s",
+				newName, oldName)
+		}
+
 		if err := netlink.LinkSetName(link, newName); err != nil {
 			return fmt.Errorf("failed to rename interface %s to %s: %v", oldName, newName, err)
 		}
-		// Re-get the link with new name
-		link, err = netlink.LinkByName(newName)
-		if err != nil {
-			return fmt.Errorf("failed to find renamed link %s: %v", newName, err)
+		
+		// Re-get the link with new name, with retry for timing issues
+		var retryErr error
+		for i := 0; i < 3; i++ {
+			if link, retryErr = netlink.LinkByName(newName); retryErr == nil {
+				break
+			}
+			m.logger.V(2).Info("Retrying to find renamed interface",
+				"attempt", i+1, "oldName", oldName, "newName", newName, "error", retryErr)
+			time.Sleep(time.Millisecond * 50) // Small delay
+		}
+		if retryErr != nil {
+			return fmt.Errorf("failed to find renamed link %s (from %s): %v",
+				newName, oldName, retryErr)
 		}
 	}
 
