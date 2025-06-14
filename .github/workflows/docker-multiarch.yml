@@ -7,6 +7,12 @@ on:
       - develop
     tags:
       - "v*"
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "**.go"
+      - "build/package/Dockerfile"
+      - ".github/workflows/docker-multiarch.yml"
   pull_request:
     branches:
       - main
