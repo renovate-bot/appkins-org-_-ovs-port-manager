@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/appkins-org/ovs-port-manager/internal/config"
+	"github.com/appkins-org/ovs-port-manager/internal/models"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -57,34 +58,6 @@ type ContainerOVSConfig struct {
 	Interface   string
 }
 
-// OVS Database Schema Models
-type Bridge struct {
-	UUID        string            `ovsdb:"_uuid"`
-	Name        string            `ovsdb:"name"`
-	Ports       []string          `ovsdb:"ports"`
-	ExternalIDs map[string]string `ovsdb:"external_ids"`
-	OtherConfig map[string]string `ovsdb:"other_config"`
-}
-
-type Port struct {
-	UUID        string            `ovsdb:"_uuid"`
-	Name        string            `ovsdb:"name"`
-	Interfaces  []string          `ovsdb:"interfaces"`
-	ExternalIDs map[string]string `ovsdb:"external_ids"`
-}
-
-type Interface struct {
-	UUID        string            `ovsdb:"_uuid"`
-	Name        string            `ovsdb:"name"`
-	Type        string            `ovsdb:"type"`
-	ExternalIDs map[string]string `ovsdb:"external_ids"`
-}
-
-type OpenvSwitch struct {
-	UUID    string   `ovsdb:"_uuid"`
-	Bridges []string `ovsdb:"bridges"`
-}
-
 // New creates a new OVS port manager
 func New() (*Manager, error) {
 	// Load configuration
@@ -106,10 +79,10 @@ func New() (*Manager, error) {
 
 	// Create OVS database client with configurable database name
 	clientDBModel, err := model.NewClientDBModel(cfg.OVS.DatabaseName, map[string]model.Model{
-		"Bridge":       &Bridge{},
-		"Port":         &Port{},
-		"Interface":    &Interface{},
-		"Open_vSwitch": &OpenvSwitch{},
+		"Bridge":       &models.Bridge{},
+		"Port":         &models.Port{},
+		"Interface":    &models.Interface{},
+		"Open_vSwitch": &models.OpenvSwitch{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OVS schema: %v", err)
@@ -198,8 +171,8 @@ func (m *Manager) Start(ctx context.Context) error {
 // ensureDefaultBridge creates the default OVS bridge if it doesn't exist
 func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 	// Check if the bridge already exists
-	var bridges []Bridge
-	err := m.ovsClient.WhereCache(func(b *Bridge) bool {
+	var bridges []models.Bridge
+	err := m.ovsClient.Where(func(b *models.Bridge) bool {
 		return b.Name == m.config.OVS.DefaultBridge
 	}).List(ctx, &bridges)
 	if err != nil {
@@ -214,7 +187,7 @@ func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 	m.logger.WithField("bridge", m.config.OVS.DefaultBridge).Info("Creating default bridge")
 
 	// Create bridge
-	bridge := &Bridge{
+	bridge := &models.Bridge{
 		Name:        m.config.OVS.DefaultBridge,
 		Ports:       []string{},
 		ExternalIDs: map[string]string{},
@@ -421,8 +394,8 @@ func (m *Manager) portExists(ctx context.Context, bridge, containerID, interface
 	// Generate the expected port name for this container
 	expectedPortName := m.generatePortName(containerID)
 
-	var ports []Port
-	err := m.ovsClient.WhereCache(func(p *Port) bool {
+	var ports []models.Port
+	err := m.ovsClient.Where(func(p *models.Port) bool {
 		// Check both by port name (direct match) and by container_id in external_ids
 		externalID, exists := p.ExternalIDs["container_id"]
 		return p.Name == expectedPortName || (exists && externalID == containerID)
@@ -657,7 +630,7 @@ func (m *Manager) deleteLinkByName(interfaceName string) error {
 // addPortToBridge adds a port to an OVS bridge
 func (m *Manager) addPortToBridge(ctx context.Context, bridge, portName, containerID, interfaceName string) error {
 	// Create Interface record
-	iface := &Interface{
+	iface := &models.Interface{
 		Name: portName,
 		Type: "",
 		ExternalIDs: map[string]string{
@@ -670,7 +643,7 @@ func (m *Manager) addPortToBridge(ctx context.Context, bridge, portName, contain
 	}
 
 	// Create Port record
-	port := &Port{
+	port := &models.Port{
 		Name:       portName,
 		Interfaces: []string{}, // Will be populated by OVSDB
 		ExternalIDs: map[string]string{
@@ -697,8 +670,8 @@ func (m *Manager) addPortToBridge(ctx context.Context, bridge, portName, contain
 	operations = append(operations, portOps...)
 
 	// Add port to bridge - we need to find the bridge first
-	var bridges []Bridge
-	err = m.ovsClient.WhereAny(func(b *Bridge) bool {
+	var bridges []models.Bridge
+	err = m.ovsClient.WhereAny(func(b *models.Bridge) bool {
 		return b.Name == bridge
 	}).List(ctx, &bridges)
 	if err != nil {
@@ -757,8 +730,8 @@ func (m *Manager) findPortsForContainer(ctx context.Context, containerID string)
 	// Generate the expected port name for this container
 	expectedPortName := m.generatePortName(containerID)
 
-	var ports []Port
-	err := m.ovsClient.WhereCache(func(p *Port) bool {
+	var ports []models.Port
+	err := m.ovsClient.Where(func(p *models.Port) bool {
 		// Check both by port name (direct match) and by container_id in external_ids
 		externalID, exists := p.ExternalIDs["container_id"]
 		return p.Name == expectedPortName || (exists && externalID == containerID)
@@ -778,8 +751,8 @@ func (m *Manager) findPortsForContainer(ctx context.Context, containerID string)
 // cleanupOVSPort removes a port from OVS bridge and database
 func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) error {
 	// Find all ports with this name
-	var ports []Port
-	err := m.ovsClient.WhereCache(func(p *Port) bool {
+	var ports []models.Port
+	err := m.ovsClient.Where(func(p *models.Port) bool {
 		return p.Name == portName
 	}).List(ctx, &ports)
 	if err != nil {
@@ -792,11 +765,11 @@ func (m *Manager) cleanupOVSPort(ctx context.Context, bridge, portName string) e
 	}
 
 	// Find interfaces associated with this port
-	var interfaces []Interface
+	var interfaces []models.Interface
 	for _, port := range ports {
 		for _, ifaceUUID := range port.Interfaces {
-			var ifaces []Interface
-			err := m.ovsClient.WhereCache(func(i *Interface) bool {
+			var ifaces []models.Interface
+			err := m.ovsClient.Where(func(i *models.Interface) bool {
 				return i.UUID == ifaceUUID
 			}).List(ctx, &ifaces)
 			if err != nil {
