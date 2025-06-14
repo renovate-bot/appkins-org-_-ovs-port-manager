@@ -46,9 +46,10 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     permissions:
+      attestations: write
       contents: read
-      packages: write
       id-token: write
+      packages: write
       security-events: write
 
     steps:
