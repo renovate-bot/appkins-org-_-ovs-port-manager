@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  ovs-port-manager:
+    build: .
+    container_name: ovs-port-manager
+    restart: unless-stopped
+    privileged: true
+    network_mode: "host"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/netns:/var/run/netns:shared
+      - /proc:/host/proc:ro
+    environment:
+      - LOG_LEVEL=info
+    depends_on:
+      - ovs-setup
+
+  # Helper service to set up OVS bridge
+  ovs-setup:
+    image: alpine:latest
+    container_name: ovs-setup
+    privileged: true
+    network_mode: "host"
+    command: >
+      sh -c "
+        apk add --no-cache openvswitch &&
+        /usr/share/openvswitch/scripts/ovs-ctl start &&
+        ovs-vsctl --may-exist add-br ovsbr0 &&
+        echo 'OVS bridge ovsbr0 created successfully'
+      "
+
+  # Example application with OVS configuration
+  example-app:
+    image: nginx:latest
+    container_name: example-app
+    labels:
+      - "ovs.ip_address=192.168.100.10/24"
+      - "ovs.bridge=ovsbr0"
+      - "ovs.gateway=192.168.100.1"
+    depends_on:
+      - ovs-port-manager
+    restart: unless-stopped
+
+  # Another example application
+  example-app2:
+    image: python:3.9-alpine
+    container_name: example-app2
+    labels:
+      - "ovs.ip_address=192.168.100.11/24"
+      - "ovs.bridge=ovsbr0"
+      - "ovs.gateway=192.168.100.1"
+      - "ovs.mtu=1400"
+    command: python -c "import http.server; http.server.test(port=8000)"
+    depends_on:
+      - ovs-port-manager
+    restart: unless-stopped
