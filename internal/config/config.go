@@ -106,6 +106,7 @@ func Load() (*Config, error) {
 	v.SetConfigType("yaml")
 	v.AddConfigPath("/etc/ovs-port-manager/")
 	v.AddConfigPath("$HOME/.ovs-port-manager/")
+	v.AddConfigPath("./configs/")
 	v.AddConfigPath(".")
 
 	// Set environment variable prefix

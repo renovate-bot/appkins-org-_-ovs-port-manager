@@ -11,12 +11,36 @@ A Go application that automatically manages Open vSwitch (OVS) ports for Docker 
 - Based on the `ovs-docker` utility patterns
 - Uses the DigitalOcean go-openvswitch library
 
+## Project Structure
+
+This project follows the [Standard Go Project Layout](https://github.com/golang-standards/project-layout):
+
+```
+├── cmd/                        # Main applications
+│   └── ovs-port-manager/      # Main application entry point
+├── internal/                   # Private application code
+│   ├── config/                # Configuration handling
+│   ├── manager/               # Core manager logic
+│   └── models/                # OVS database models (generated)
+├── configs/                    # Configuration files
+│   └── ovs-port-manager.yaml  # Default configuration
+├── assets/                     # Static assets and data files
+│   └── ovs-nb.ovsschema      # OVS database schema
+├── build/                      # Build and packaging files
+│   └── package/               # Container packaging
+│       ├── Dockerfile         # Docker image definition
+│       └── docker-compose.yml # Docker compose configuration
+├── scripts/                    # Build and utility scripts
+├── docs/                       # Documentation
+└── generate.go                # Code generation directives
+```
+
 ## Prerequisites
 
 - Docker daemon running and accessible
 - Open vSwitch installed and running
 - Root privileges (required for network namespace operations)
-- Go 1.21 or later
+- Go 1.24 or later
 
 ### Installing Open vSwitch
 

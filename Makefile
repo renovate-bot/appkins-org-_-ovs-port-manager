@@ -20,7 +20,7 @@ all: deps build
 
 # Build the binary
 build:
-	$(GOBUILD) -o $(BINARY_NAME) -v
+	$(GOBUILD) -o $(BINARY_NAME) -v ./cmd/ovs-port-manager
 
 # Clean build artifacts
 clean:
@@ -38,15 +38,15 @@ deps:
 
 # Build Docker image
 docker-build:
-	docker build -t $(DOCKER_IMAGE):$(VERSION) .
+	docker build -t $(DOCKER_IMAGE):$(VERSION) -f build/package/Dockerfile .
 
 # Run with Docker Compose
 docker-run:
-	docker-compose up --build
+	docker-compose -f build/package/docker-compose.yml up --build
 
 # Stop Docker Compose
 docker-stop:
-	docker-compose down
+	docker-compose -f build/package/docker-compose.yml down
 
 # Test netlink functionality (requires root)
 test-netlink:
@@ -55,7 +55,7 @@ test-netlink:
 		echo "Please run with sudo: sudo make test-netlink"; \
 		exit 1; \
 	fi
-	./hack/test-netlink.sh
+	./scripts/test-netlink.sh
 
 # Install (copy to /usr/local/bin)
 install: build
@@ -102,7 +102,7 @@ help:
 	@echo "  docker-build - Build Docker image"
 	@echo "  docker-run   - Run with Docker Compose"
 	@echo "  docker-stop  - Stop Docker Compose"
-  test-netlink - Test netlink functionality (requires root)"
+	@echo "  test-netlink - Test netlink functionality (requires root)"
 	@echo "  install      - Install to /usr/local/bin (requires root)"
 	@echo "  uninstall    - Remove from /usr/local/bin (requires root)"
 	@echo "  fmt          - Format code"

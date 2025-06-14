@@ -8,15 +8,14 @@ README.md
 
 # Test files
 *_test.go
-test-*.sh
+scripts/test-*.sh
 
 # Build artifacts
 ovs-port-manager
 *.log
 
 # Docker
-Dockerfile*
-docker-compose.yml
+build/
 .dockerignore
 
 # IDE
