@@ -17,11 +17,12 @@ WORKDIR /app
 # Copy go mod files first (for better caching)
 COPY go.mod go.sum ./
 
+# Copy source code
+COPY internal/ ./internal/
+COPY cmd/ ./cmd/
+
 # Download dependencies with verbose output
 RUN go mod download && go mod verify
-
-# Copy source code
-COPY main.go ./
 
 # Build the application with proper multi-architecture support
 # Use conditional logic to handle different architectures more robustly
@@ -33,7 +34,7 @@ RUN set -e; \
     go build \
         -v \
         -ldflags='-w -s -extldflags "-static"' \
-        -o ovs-port-manager .
+        -o ovs-port-manager ./cmd/ovs-port-manager
 
 # Final stage: scratch container for minimal size
 FROM scratch
