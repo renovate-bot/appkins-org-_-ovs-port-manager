@@ -23,13 +23,20 @@ func main() {
 		cancel()
 	}()
 
+	log := logrus.New()
+	log.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+	})
+	log.SetLevel(logrus.InfoLevel)
+	log.SetOutput(os.Stdout)
+
 	// Create and start the OVS port manager
-	manager, err := manager.New()
+	manager, err := manager.New(log)
 	if err != nil {
-		logrus.WithError(err).Fatal("Failed to create OVS port manager")
+		log.WithError(err).Fatal("Failed to create OVS port manager")
 	}
 
 	if err := manager.Start(ctx); err != nil {
-		logrus.WithError(err).Fatal("OVS port manager failed")
+		log.WithError(err).Fatal("OVS port manager failed")
 	}
 }

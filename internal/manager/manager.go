@@ -58,7 +58,7 @@ type ContainerOVSConfig struct {
 }
 
 // New creates a new OVS port manager
-func New() (*Manager, error) {
+func New(logger *logrus.Logger) (*Manager, error) {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -91,7 +91,6 @@ func New() (*Manager, error) {
 	models.Schema()
 
 	// Create logger with configurable settings
-	logger := logrus.New()
 	level, err := logrus.ParseLevel(cfg.Logging.Level)
 	if err != nil {
 		level = logrus.InfoLevel
@@ -131,7 +130,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.ovsClient.List(ctx, &l); err != nil {
 		return fmt.Errorf("failed to list Open vSwitch: %v", err)
 	}
-	fmt.Printf("Connected to OVS database: %v\n", l[0].Bridges)
+
 	m.logger.WithField("bridges", l[0].Bridges).Info("Connected to OVS database")
 
 	// Ensure default bridge exists
