@@ -34,6 +34,8 @@ const (
 	OVSMTULabel = "ovs.mtu"
 	// OVSMACAddressLabel is the Docker label that specifies the MAC address (optional)
 	OVSMACAddressLabel = "ovs.mac_address"
+	// InterfaceNameLimit is the maximum length for network interface names in Linux
+	InterfaceNameLimit = 15
 )
 
 // Manager manages OVS ports for Docker containers
@@ -416,10 +418,14 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 
 // portExists checks if a port already exists for a container
 func (m *Manager) portExists(ctx context.Context, bridge, containerID, interfaceName string) (bool, error) {
+	// Generate the expected port name for this container
+	expectedPortName := m.generatePortName(containerID)
+	
 	var ports []Port
 	err := m.ovsClient.WhereCache(func(p *Port) bool {
+		// Check both by port name (direct match) and by container_id in external_ids
 		externalID, exists := p.ExternalIDs["container_id"]
-		return exists && externalID == containerID
+		return p.Name == expectedPortName || (exists && externalID == containerID)
 	}).List(ctx, &ports)
 	if err != nil {
 		return false, fmt.Errorf("failed to list ports: %v", err)
@@ -430,8 +436,21 @@ func (m *Manager) portExists(ctx context.Context, bridge, containerID, interface
 
 // generatePortName generates a unique port name for a container
 func (m *Manager) generatePortName(containerID string) string {
-	// Use first 12 characters of container ID to create a unique but readable port name
-	return fmt.Sprintf("veth%s", containerID[:12])
+	// Use first 12 characters of container ID as the port name
+	// This provides exact matching for container operations and stays under the 15-char limit
+	// Format: 1322aba3640c (12 chars) + _c (2 chars) = 14 chars total (under 15 limit)
+	portName := containerID[:12]
+	
+	// Validate that port name with suffix won't exceed kernel limit
+	if len(portName+"_c") > InterfaceNameLimit {
+		m.logger.WithFields(logrus.Fields{
+			"portName": portName,
+			"length":   len(portName + "_c"),
+			"limit":    InterfaceNameLimit,
+		}).Warn("Generated port name may exceed kernel interface name limit")
+	}
+	
+	return portName
 }
 
 // createVethPair creates a veth pair using netlink
@@ -735,10 +754,14 @@ func (m *Manager) configureContainerInterface(pid int, vethName string, config *
 
 // findPortsForContainer finds all OVS ports associated with a container
 func (m *Manager) findPortsForContainer(ctx context.Context, containerID string) ([]string, error) {
+	// Generate the expected port name for this container
+	expectedPortName := m.generatePortName(containerID)
+	
 	var ports []Port
 	err := m.ovsClient.WhereCache(func(p *Port) bool {
+		// Check both by port name (direct match) and by container_id in external_ids
 		externalID, exists := p.ExternalIDs["container_id"]
-		return exists && externalID == containerID
+		return p.Name == expectedPortName || (exists && externalID == containerID)
 	}).List(ctx, &ports)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ports: %v", err)
