@@ -82,10 +82,13 @@ func New() (*Manager, error) {
 		return nil, fmt.Errorf("failed to create OVS schema: %v", err)
 	}
 
+	// dbModel, errs := model.NewDatabaseModel(models.Schema(), clientDBModel)
+
 	ovsClient, err := client.NewOVSDBClient(clientDBModel, client.WithEndpoint("unix:"+cfg.OVS.SocketPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OVS client: %v", err)
 	}
+	models.Schema()
 
 	// Create logger with configurable settings
 	logger := logrus.New()
@@ -123,6 +126,12 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer func() {
 		m.ovsClient.Disconnect()
 	}()
+
+	l := []models.OpenvSwitch{}
+	if err := m.ovsClient.List(ctx, &l); err != nil {
+		return fmt.Errorf("failed to list Open vSwitch: %v", err)
+	}
+	m.logger.WithField("bridges", l[0].Bridges).Info("Connected to OVS database")
 
 	// Ensure default bridge exists
 	if err := m.ensureDefaultBridge(ctx); err != nil {
