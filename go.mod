@@ -3,7 +3,7 @@ module github.com/appkins-org/ovs-port-manager
 go 1.24.0
 
 require (
-	github.com/docker/docker v25.0.6+incompatible
+	github.com/docker/docker v25.0.10+incompatible
 	github.com/go-logr/logr v1.4.2
 	github.com/go-logr/zapr v1.3.0
 	github.com/ovn-org/libovsdb v0.7.0
