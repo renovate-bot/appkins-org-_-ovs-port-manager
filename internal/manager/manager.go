@@ -420,7 +420,7 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 func (m *Manager) portExists(ctx context.Context, bridge, containerID, interfaceName string) (bool, error) {
 	// Generate the expected port name for this container
 	expectedPortName := m.generatePortName(containerID)
-	
+
 	var ports []Port
 	err := m.ovsClient.WhereCache(func(p *Port) bool {
 		// Check both by port name (direct match) and by container_id in external_ids
@@ -440,7 +440,7 @@ func (m *Manager) generatePortName(containerID string) string {
 	// This provides exact matching for container operations and stays under the 15-char limit
 	// Format: 1322aba3640c (12 chars) + _c (2 chars) = 14 chars total (under 15 limit)
 	portName := containerID[:12]
-	
+
 	// Validate that port name with suffix won't exceed kernel limit
 	if len(portName+"_c") > InterfaceNameLimit {
 		m.logger.WithFields(logrus.Fields{
@@ -449,7 +449,7 @@ func (m *Manager) generatePortName(containerID string) string {
 			"limit":    InterfaceNameLimit,
 		}).Warn("Generated port name may exceed kernel interface name limit")
 	}
-	
+
 	return portName
 }
 
@@ -698,7 +698,7 @@ func (m *Manager) addPortToBridge(ctx context.Context, bridge, portName, contain
 
 	// Add port to bridge - we need to find the bridge first
 	var bridges []Bridge
-	err = m.ovsClient.WhereCache(func(b *Bridge) bool {
+	err = m.ovsClient.WhereAny(func(b *Bridge) bool {
 		return b.Name == bridge
 	}).List(ctx, &bridges)
 	if err != nil {
@@ -756,7 +756,7 @@ func (m *Manager) configureContainerInterface(pid int, vethName string, config *
 func (m *Manager) findPortsForContainer(ctx context.Context, containerID string) ([]string, error) {
 	// Generate the expected port name for this container
 	expectedPortName := m.generatePortName(containerID)
-	
+
 	var ports []Port
 	err := m.ovsClient.WhereCache(func(p *Port) bool {
 		// Check both by port name (direct match) and by container_id in external_ids
