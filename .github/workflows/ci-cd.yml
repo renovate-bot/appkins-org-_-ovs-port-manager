@@ -38,9 +38,9 @@ jobs:
         run: go vet ./...
 
       - name: Run staticcheck
-        uses: dominikh/staticcheck-action@v1.3.1
+        uses: dominikh/staticcheck-action@v1
         with:
-          version: "2023.1.6"
+          version: "latest"
 
   build-and-push:
     needs: test
