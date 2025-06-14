@@ -48,6 +48,9 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 # Copy the static binary
 COPY --from=builder /app/ovs-port-manager /ovs-port-manager
 
+# Copy the default configuration file
+COPY ovs-port-manager.yaml ./
+
 # Labels for metadata
 LABEL maintainer="appkins-org" \
       description="OVS Port Manager for Docker containers - Minimal scratch image" \
