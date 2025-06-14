@@ -1,0 +1,69 @@
+# OVS Port Manager Configuration
+# This file shows all available configuration options with their default values
+
+# OVS Database configuration
+ovs:
+  # Database name (can be overridden with OVS_DB environment variable)
+  database_name: "Open_vSwitch"
+
+  # Socket path for OVS database connection
+  socket_path: "/var/run/openvswitch/db.sock"
+
+  # Connection timeout for OVS operations
+  connection_timeout: 30s
+
+  # Default bridge name for containers
+  default_bridge: "ovs_bond0"
+
+  # Default interface name inside containers
+  default_interface: "bond0"
+
+# Docker configuration
+docker:
+  # Docker socket path
+  socket_path: "/var/run/docker.sock"
+
+  # Docker API version (empty for automatic negotiation)
+  api_version: ""
+
+  # Connection timeout for Docker operations
+  connection_timeout: 30s
+
+# Network configuration
+network:
+  # Default MTU for interfaces
+  default_mtu: 1500
+
+  # Enable IPv6 support
+  enable_ipv6: false
+
+  # Handle network namespaces
+  handle_netns: true
+
+# Logging configuration
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+
+  # Log format: text, json
+  format: "text"
+
+  # Enable structured logging
+  structured: false
+
+  # Log file path (empty for stdout)
+  file_path: ""
+
+# Server configuration
+server:
+  # Enable metrics endpoint
+  enable_metrics: false
+
+  # Metrics server address
+  metrics_addr: ":8080"
+
+  # Enable health check endpoint
+  enable_health_check: true
+
+  # Health check server address
+  health_addr: ":8081"

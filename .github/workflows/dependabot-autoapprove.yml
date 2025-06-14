@@ -12,7 +12,7 @@ jobs:
   auto-approve:
     runs-on: ubuntu-latest
     if: ${{ github.actor == 'dependabot[bot]' }}
-    
+
     steps:
       - name: Fetch Dependabot metadata
         id: metadata

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/appkins-org/ovs-port-manager/internal/config"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -45,6 +46,7 @@ type OVSPortManager struct {
 	dockerClient *dockerclient.Client
 	ovsClient    client.Client
 	logger       *logrus.Logger
+	config       *config.Config
 }
 
 // ContainerOVSConfig holds the OVS configuration for a container
@@ -60,14 +62,25 @@ type ContainerOVSConfig struct {
 
 // NewOVSPortManager creates a new OVS port manager
 func NewOVSPortManager() (*OVSPortManager, error) {
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration: %v", err)
+	}
+
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %v", err)
+	}
+
 	// Create Docker client
 	dockerClient, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Docker client: %v", err)
 	}
 
-	// Create OVS database client
-	clientDBModel, err := model.NewClientDBModel("Open_vSwitch", map[string]model.Model{
+	// Create OVS database client with configurable database name
+	clientDBModel, err := model.NewClientDBModel(cfg.OVS.DatabaseName, map[string]model.Model{
 		"Bridge":       &Bridge{},
 		"Port":         &Port{},
 		"Interface":    &Interface{},
@@ -77,19 +90,28 @@ func NewOVSPortManager() (*OVSPortManager, error) {
 		return nil, fmt.Errorf("failed to create OVS schema: %v", err)
 	}
 
-	ovsClient, err := client.NewOVSDBClient(clientDBModel, client.WithEndpoint("unix:/var/run/openvswitch/db.sock"))
+	ovsClient, err := client.NewOVSDBClient(clientDBModel, client.WithEndpoint("unix:"+cfg.OVS.SocketPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OVS client: %v", err)
 	}
 
-	// Create logger
+	// Create logger with configurable settings
 	logger := logrus.New()
-	logger.SetLevel(logrus.InfoLevel)
+	level, err := logrus.ParseLevel(cfg.Logging.Level)
+	if err != nil {
+		level = logrus.InfoLevel
+	}
+	logger.SetLevel(level)
+
+	if cfg.Logging.Format == "json" {
+		logger.SetFormatter(&logrus.JSONFormatter{})
+	}
 
 	return &OVSPortManager{
 		dockerClient: dockerClient,
 		ovsClient:    ovsClient,
 		logger:       logger,
+		config:       cfg,
 	}, nil
 }
 
@@ -153,22 +175,22 @@ func (m *OVSPortManager) ensureDefaultBridge(ctx context.Context) error {
 	// Check if the bridge already exists
 	var bridges []Bridge
 	err := m.ovsClient.WhereCache(func(b *Bridge) bool {
-		return b.Name == DefaultBridge
+		return b.Name == m.config.OVS.DefaultBridge
 	}).List(ctx, &bridges)
 	if err != nil {
 		return fmt.Errorf("failed to list bridges: %v", err)
 	}
 
 	if len(bridges) > 0 {
-		m.logger.WithField("bridge", DefaultBridge).Info("Default bridge already exists")
+		m.logger.WithField("bridge", m.config.OVS.DefaultBridge).Info("Default bridge already exists")
 		return nil
 	}
 
-	m.logger.WithField("bridge", DefaultBridge).Info("Creating default bridge")
+	m.logger.WithField("bridge", m.config.OVS.DefaultBridge).Info("Creating default bridge")
 
 	// Create bridge
 	bridge := &Bridge{
-		Name:        DefaultBridge,
+		Name:        m.config.OVS.DefaultBridge,
 		Ports:       []string{},
 		ExternalIDs: map[string]string{},
 		OtherConfig: map[string]string{},
@@ -182,7 +204,7 @@ func (m *OVSPortManager) ensureDefaultBridge(ctx context.Context) error {
 	// Execute the transaction
 	_, err = m.ovsClient.Transact(ctx, ops...)
 	if err != nil {
-		return fmt.Errorf("failed to create bridge %s: %v", DefaultBridge, err)
+		return fmt.Errorf("failed to create bridge %s: %v", m.config.OVS.DefaultBridge, err)
 	}
 
 	return nil
@@ -265,7 +287,7 @@ func (m *OVSPortManager) extractOVSConfig(containerID string, labels map[string]
 
 	bridge := labels[OVSBridgeLabel]
 	if bridge == "" {
-		bridge = DefaultBridge
+		bridge = m.config.OVS.DefaultBridge
 	}
 
 	return &ContainerOVSConfig{
@@ -275,7 +297,7 @@ func (m *OVSPortManager) extractOVSConfig(containerID string, labels map[string]
 		Gateway:     labels[OVSGatewayLabel],
 		MTU:         labels[OVSMTULabel],
 		MACAddress:  labels[OVSMACAddressLabel],
-		Interface:   DefaultInterface,
+		Interface:   m.config.OVS.DefaultInterface,
 	}
 }
 
