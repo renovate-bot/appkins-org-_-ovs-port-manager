@@ -48,15 +48,6 @@ docker-run:
 docker-stop:
 	docker-compose down
 
-# Run demo (requires root)
-demo: build
-	@echo "Running demo (requires root privileges)..."
-	@if [ "$$(id -u)" -ne 0 ]; then \
-		echo "Please run with sudo: sudo make demo"; \
-		exit 1; \
-	fi
-	./hack/demo.sh
-
 # Test netlink functionality (requires root)
 test-netlink:
 	@echo "Testing netlink functionality (requires root privileges)..."
@@ -111,7 +102,6 @@ help:
 	@echo "  docker-build - Build Docker image"
 	@echo "  docker-run   - Run with Docker Compose"
 	@echo "  docker-stop  - Stop Docker Compose"
-	@echo "  demo         - Run demonstration (requires root)
   test-netlink - Test netlink functionality (requires root)"
 	@echo "  install      - Install to /usr/local/bin (requires root)"
 	@echo "  uninstall    - Remove from /usr/local/bin (requires root)"
