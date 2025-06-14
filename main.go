@@ -35,9 +35,9 @@ const (
 	// OVSMACAddressLabel is the Docker label that specifies the MAC address (optional)
 	OVSMACAddressLabel = "ovs.mac_address"
 	// DefaultBridge is the default OVS bridge name
-	DefaultBridge = "ovsbr0"
+	DefaultBridge = "ovs_bond0"
 	// DefaultInterface is the default interface name inside container
-	DefaultInterface = "eth1"
+	DefaultInterface = "bond0"
 )
 
 // OVSPortManager manages OVS ports for Docker containers

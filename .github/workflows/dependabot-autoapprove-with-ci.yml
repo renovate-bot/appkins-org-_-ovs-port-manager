@@ -1,0 +1,98 @@
+name: Dependabot Auto-Approve with CI Checks
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  actions: read
+
+jobs:
+  dependabot-auto-approve:
+    runs-on: ubuntu-latest
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v1
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Wait for CI checks to complete
+        uses: lewagon/wait-on-check-action@v1.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          check-name: 'test'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          allowed-conclusions: success,neutral,skipped
+
+      - name: Wait for build checks to complete
+        uses: lewagon/wait-on-check-action@v1.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          check-name: 'build-and-push'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          allowed-conclusions: success,neutral,skipped
+
+      - name: Auto-approve safe updates
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' || 
+          steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
+          steps.metadata.outputs.package-ecosystem == 'github_actions'
+        run: |
+          echo "Auto-approving ${{ steps.metadata.outputs.dependency-names }} update from ${{ steps.metadata.outputs.previous-version }} to ${{ steps.metadata.outputs.new-version }}"
+          gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-merge safe updates
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' || 
+          steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
+          steps.metadata.outputs.package-ecosystem == 'github_actions'
+        run: |
+          echo "Auto-merging ${{ steps.metadata.outputs.dependency-names }} update"
+          gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on major updates
+        if: ${{ steps.metadata.outputs.update-type == 'version-update:semver-major' }}
+        run: |
+          gh pr comment "$PR_URL" --body "🚨 **Major Version Update Detected**
+          
+          **Dependency:** ${{ steps.metadata.outputs.dependency-names }}
+          **Previous Version:** ${{ steps.metadata.outputs.previous-version }}
+          **New Version:** ${{ steps.metadata.outputs.new-version }}
+          **Package Ecosystem:** ${{ steps.metadata.outputs.package-ecosystem }}
+          
+          This major version update requires manual review. Please:
+          1. Review the changelog for breaking changes
+          2. Test the application thoroughly
+          3. Update any integration code if necessary
+          4. Approve and merge manually when ready"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add label for major updates
+        if: ${{ steps.metadata.outputs.update-type == 'version-update:semver-major' }}
+        run: |
+          gh pr edit "$PR_URL" --add-label "dependencies,major-update,needs-review"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

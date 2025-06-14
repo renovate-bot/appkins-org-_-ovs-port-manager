@@ -1,0 +1,58 @@
+name: Dependabot Auto-Merge
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  check_suite:
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    
+    steps:
+      - name: Check if PR is approved
+        id: check-approval
+        run: |
+          APPROVED=$(gh pr view "$PR_URL" --json reviewDecision --jq '.reviewDecision')
+          echo "approval-status=$APPROVED" >> $GITHUB_OUTPUT
+          echo "PR approval status: $APPROVED"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check CI status
+        id: check-ci
+        run: |
+          # Get the latest commit status
+          COMMIT_SHA="${{ github.event.pull_request.head.sha }}"
+          STATUS=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/status --jq '.state')
+          echo "ci-status=$STATUS" >> $GITHUB_OUTPUT
+          echo "CI status: $STATUS"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v1
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Auto-merge safe updates
+        if: |
+          steps.check-approval.outputs.approval-status == 'APPROVED' &&
+          steps.check-ci.outputs.ci-status == 'success' &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' || 
+           steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
+           steps.metadata.outputs.package-ecosystem == 'github_actions')
+        run: |
+          echo "Auto-merging approved Dependabot PR with passing CI"
+          gh pr merge --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
