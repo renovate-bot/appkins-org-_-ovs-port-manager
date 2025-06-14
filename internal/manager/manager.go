@@ -17,7 +17,6 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/ovn-org/libovsdb/client"
-	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -78,24 +77,7 @@ func New() (*Manager, error) {
 	}
 
 	// Create OVS database client with configurable database name
-	clientDBModel, err := model.NewClientDBModel(cfg.OVS.DatabaseName, map[string]model.Model{
-		"AutoAttach":                &models.AutoAttach{},
-		"Bridge":                    &models.Bridge{},
-		"Controller":                &models.Controller{},
-		"Flow_Sample_Collector_Set": &models.FlowSampleCollectorSet{},
-		"Flow_Table":                &models.FlowTable{},
-		"IPFIX":                     &models.IPFIX{},
-		"Interface":                 &models.Interface{},
-		"Manager":                   &models.Manager{},
-		"Mirror":                    &models.Mirror{},
-		"NetFlow":                   &models.NetFlow{},
-		"Open_vSwitch":              &models.OpenvSwitch{},
-		"Port":                      &models.Port{},
-		"QoS":                       &models.QoS{},
-		"Queue":                     &models.Queue{},
-		"SSL":                       &models.SSL{},
-		"sFlow":                     &models.SFlow{},
-	})
+	clientDBModel, err := models.FullDatabaseModel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OVS schema: %v", err)
 	}
@@ -184,9 +166,10 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 	// Check if the bridge already exists
 	var bridges []models.Bridge
-	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
-		return b.Name == m.config.OVS.DefaultBridge
-	}).List(ctx, &bridges)
+	b := &models.Bridge{
+		Name: m.config.OVS.DefaultBridge,
+	}
+	err := m.ovsClient.Where(b).List(ctx, &bridges)
 	if err != nil {
 		return fmt.Errorf("failed to list bridges: %v", err)
 	}
