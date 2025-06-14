@@ -1,49 +1,56 @@
-# Build stage
-FROM golang:1.21-alpine AS builder
+# Build stage - use Alpine for better multi-arch support
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+
+# Automatically provided by Docker when using buildx
+ARG TARGETOS
+ARG TARGETARCH
+ARG BUILDPLATFORM
 
 # Install build dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache \
+    ca-certificates \
+    git \
+    tzdata
 
 WORKDIR /app
 
-# Copy go mod files
+# Copy go mod files first (for better caching)
 COPY go.mod go.sum ./
 
-# Download dependencies
-RUN go mod download
+# Download dependencies with verbose output
+RUN go mod download && go mod verify
 
 # Copy source code
 COPY main.go ./
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o ovs-port-manager .
+# Build the application with proper multi-architecture support
+# Use conditional logic to handle different architectures more robustly
+RUN set -e; \
+    echo "Building for ${TARGETOS}/${TARGETARCH}"; \
+    export CGO_ENABLED=0; \
+    export GOOS=${TARGETOS:-linux}; \
+    export GOARCH=${TARGETARCH:-amd64}; \
+    go build \
+        -v \
+        -ldflags='-w -s -extldflags "-static"' \
+        -o ovs-port-manager .
 
-# Runtime stage
-FROM alpine:latest
+# Final stage: scratch container for minimal size
+FROM scratch
 
-# Install runtime dependencies
-RUN apk add --no-cache \
-    openvswitch \
-    iproute2 \
-    util-linux \
-    sudo
+# Copy CA certificates for HTTPS (if needed)
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-WORKDIR /root/
+# Copy timezone data (if needed)
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-# Copy the binary from builder stage
-COPY --from=builder /app/ovs-port-manager .
+# Copy the static binary
+COPY --from=builder /app/ovs-port-manager /ovs-port-manager
 
-# Create necessary directories
-RUN mkdir -p /var/run/netns
+# Labels for metadata
+LABEL maintainer="appkins-org" \
+      description="OVS Port Manager for Docker containers - Minimal scratch image" \
+      version="1.0"
 
-# Set proper permissions
-RUN chmod +x ovs-port-manager
-
-# Expose Docker socket (will be mounted as volume)
-VOLUME ["/var/run/docker.sock"]
-
-# Run as root (required for network operations)
-USER root
-
-# Start the application
-CMD ["./ovs-port-manager"]
+# Use the binary as entrypoint
+ENTRYPOINT ["/ovs-port-manager"]

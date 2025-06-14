@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   ovs-port-manager:
@@ -8,27 +8,26 @@ services:
     privileged: true
     network_mode: "host"
     volumes:
+      # Essential mounts for scratch container
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/openvswitch:/var/run/openvswitch:ro
       - /var/run/netns:/var/run/netns:shared
-      - /proc:/host/proc:ro
+      - /proc:/proc:ro
+      - /sys:/sys:ro
     environment:
       - LOG_LEVEL=info
-    depends_on:
-      - ovs-setup
-
-  # Helper service to set up OVS bridge
-  ovs-setup:
-    image: alpine:latest
-    container_name: ovs-setup
-    privileged: true
-    network_mode: "host"
-    command: >
-      sh -c "
-        apk add --no-cache openvswitch &&
-        /usr/share/openvswitch/scripts/ovs-ctl start &&
-        ovs-vsctl --may-exist add-br ovsbr0 &&
-        echo 'OVS bridge ovsbr0 created successfully'
-      "
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    devices:
+      - /dev/net/tun
+    # Health check disabled for scratch container - use depends_on without condition instead
+    # healthcheck:
+    #   test: ["CMD", "true"]  # Minimal health check - scratch containers can't run external commands
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 5s
 
   # Example application with OVS configuration
   example-app:

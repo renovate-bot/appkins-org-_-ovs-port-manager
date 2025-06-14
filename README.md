@@ -216,3 +216,171 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ovs-docker utility](https://github.com/openvswitch/ovs/blob/main/utilities/ovs-docker)
 - [DigitalOcean go-openvswitch library](https://github.com/digitalocean/go-openvswitch)
 - [Docker API Documentation](https://docs.docker.com/engine/api/)
+
+## Migration to libovsdb
+
+This project has been migrated from using direct `ovs-vsctl` command execution to using the [libovsdb](https://github.com/ovn-org/libovsdb) library for all OVS database operations. This provides several advantages:
+
+### Benefits of libovsdb Migration
+
+1. **Better Performance**: Direct database operations instead of spawning processes
+2. **Type Safety**: Strongly typed database schema models
+3. **Transaction Support**: Atomic operations with proper rollback
+4. **Event Monitoring**: Real-time database change notifications
+5. **Error Handling**: Better error reporting and handling
+
+### Key Changes
+
+#### Database Schema Models
+The project now defines Go structs that map to OVS database tables:
+
+```go
+type Bridge struct {
+    UUID         string            `ovsdb:"_uuid"`
+    Name         string            `ovsdb:"name"`
+    Ports        []string          `ovsdb:"ports"`
+    ExternalIDs  map[string]string `ovsdb:"external_ids"`
+    OtherConfig  map[string]string `ovsdb:"other_config"`
+}
+
+type Port struct {
+    UUID        string            `ovsdb:"_uuid"`
+    Name        string            `ovsdb:"name"`
+    Interfaces  []string          `ovsdb:"interfaces"`
+    ExternalIDs map[string]string `ovsdb:"external_ids"`
+}
+
+type Interface struct {
+    UUID        string            `ovsdb:"_uuid"`
+    Name        string            `ovsdb:"name"`
+    Type        string            `ovsdb:"type"`
+    ExternalIDs map[string]string `ovsdb:"external_ids"`
+}
+```
+
+#### Database Operations
+- **Bridge Creation**: Uses `client.Create()` with proper Bridge model
+- **Port Management**: Creates Port and Interface models with relationships
+- **Query Operations**: Uses `WhereCache()` for efficient cache-based queries
+- **Cleanup Operations**: Proper cascading deletes with transaction support
+
+#### Connection Management
+- Direct connection to OVS database socket (`unix:/var/run/openvswitch/db.sock`)
+- Automatic reconnection and error handling
+- Proper connection lifecycle management
+
+### Dependencies
+- Added: `github.com/ovn-org/libovsdb v0.7.0`
+- Removed dependency on: Direct `ovs-vsctl` command execution
+
+## Migration to Netlink
+
+This project has been enhanced to use the [netlink](https://github.com/vishvananda/netlink) library for all network interface operations instead of executing `ip` commands directly. This provides significant benefits:
+
+### Benefits of Netlink Migration
+
+1. **Better Performance**: Direct kernel netlink operations instead of spawning processes
+2. **Type Safety**: Strongly typed network configuration operations
+3. **Error Handling**: More precise error reporting and handling
+4. **Cross-Platform**: Better compatibility across different Linux distributions
+5. **Atomic Operations**: Better transaction support for network configuration
+
+### Key Network Operations Migrated
+
+#### Veth Pair Management
+- **Before**: `ip link add veth_l type veth peer name veth_c`
+- **After**: `netlink.LinkAdd(&netlink.Veth{...})`
+
+#### Interface Configuration
+- **Before**: Multiple `ip` commands for each operation
+- **After**: Direct netlink calls for each operation:
+  - `netlink.LinkSetUp()` - Bring interface up
+  - `netlink.LinkSetNsPid()` - Move to namespace
+  - `netlink.LinkSetName()` - Rename interface
+  - `netlink.LinkSetHardwareAddr()` - Set MAC address
+  - `netlink.LinkSetMTU()` - Set MTU
+  - `netlink.AddrAdd()` - Add IP address
+  - `netlink.RouteAdd()` - Add routes
+
+#### Network Namespace Operations
+- **Before**: `ip netns exec` commands
+- **After**: Direct namespace handle operations using `netns.GetFromPid()` and `netlink.NewHandleAt()`
+
+### Implementation Details
+
+#### New Helper Functions
+```go
+func (m *OVSPortManager) createVethPair(portName string) error
+func (m *OVSPortManager) setLinkUp(interfaceName string) error
+func (m *OVSPortManager) moveLinkToNetns(interfaceName string, pid int) error
+func (m *OVSPortManager) configureInterfaceInNetns(pid int, oldName, newName, ipAddr, macAddr, mtu, gateway string) error
+func (m *OVSPortManager) deleteLinkByName(interfaceName string) error
+```
+
+#### Replaced Operations
+| Old IP Command | New Netlink Operation |
+|---|---|
+| `ip link add ... type veth peer name ...` | `netlink.LinkAdd(&netlink.Veth{...})` |
+| `ip link set ... up` | `netlink.LinkSetUp(link)` |
+| `ip link set ... netns ...` | `netlink.LinkSetNsPid(link, pid)` |
+| `ip link set dev ... name ...` | `netlink.LinkSetName(link, name)` |
+| `ip addr add ... dev ...` | `netlink.AddrAdd(link, addr)` |
+| `ip link set dev ... address ...` | `netlink.LinkSetHardwareAddr(link, mac)` |
+| `ip link set dev ... mtu ...` | `netlink.LinkSetMTU(link, mtu)` |
+| `ip route add default via ...` | `netlink.RouteAdd(&netlink.Route{...})` |
+| `ip link delete ...` | `netlink.LinkDel(link)` |
+
+### Dependencies Added
+- `github.com/vishvananda/netlink v1.3.1` - Main netlink library
+- `github.com/vishvananda/netns v0.0.5` - Network namespace utilities
+
+### Backward Compatibility
+The `runCommand` method is still available for any non-network operations that might need shell command execution.
+
+## Docker Image
+
+### Multi-Platform Support
+
+Pre-built Docker images are available for multiple architectures:
+
+- `linux/amd64` (x86_64)
+- `linux/arm64` (ARM64/AArch64)
+
+### Using the Docker Image
+
+Pull and run the latest image:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/appkins-org/ovs-port-manager:latest
+
+# Run the container with host networking and Docker socket access
+docker run -d \
+  --name ovs-port-manager \
+  --network host \
+  --privileged \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v /var/run/openvswitch:/var/run/openvswitch \
+  ghcr.io/appkins-org/ovs-port-manager:latest
+```
+
+### Building Locally
+
+To build the multi-platform image locally:
+
+```bash
+# Build for current platform
+docker build -t ovs-port-manager .
+
+# Build for multiple platforms
+docker buildx build --platform linux/amd64,linux/arm64 -t ovs-port-manager .
+```
+
+### Available Tags
+
+- `latest`: Latest stable release
+- `main`: Latest from main branch
+- `develop`: Latest from develop branch
+- `v*.*.*`: Specific version releases
+
+## Local Installation
