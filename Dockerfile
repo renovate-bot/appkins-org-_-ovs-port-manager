@@ -1,5 +1,5 @@
 # Build stage - use Alpine for better multi-arch support
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
 # Automatically provided by Docker when using buildx
 ARG TARGETOS
