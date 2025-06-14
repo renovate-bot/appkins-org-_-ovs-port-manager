@@ -45,7 +45,7 @@ services:
 
   # Another example application
   example-app2:
-    image: python:3.9-alpine
+    image: python:3.13-alpine
     container_name: example-app2
     labels:
       - "ovs.ip_address=192.168.100.11/24"
