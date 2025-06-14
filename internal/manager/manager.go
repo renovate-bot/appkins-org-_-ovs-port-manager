@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -119,11 +117,6 @@ func New(logger logr.Logger) (*Manager, error) {
 // Start begins monitoring Docker events and managing OVS ports.
 func (m *Manager) Start(ctx context.Context) error {
 	m.logger.V(3).Info("Starting OVS Port Manager...")
-
-	// Ensure required directories exist
-	if err := m.ensureNetnsDirectory(); err != nil {
-		return fmt.Errorf("failed to ensure netns directory: %v", err)
-	}
 
 	// Connect to OVS database
 	if err := m.ovsClient.Connect(ctx); err != nil {
@@ -529,70 +522,29 @@ func (m *Manager) moveLinkToNetns(interfaceName string, pid int) error {
 	return nil
 }
 
-// configureInterfaceInNetns configures an interface inside a container's network namespace.
-func (m *Manager) configureInterfaceInNetns(
-	pid int,
+// configureInterfaceInCurrentNs configures an interface in the current network namespace.
+// This function assumes it's already running in the target namespace.
+func (m *Manager) configureInterfaceInCurrentNs(
 	oldName, newName, ipAddr, macAddr, mtu, gateway string,
 ) error {
-	// Create a temporary symbolic link to the container's network namespace
-	nsPath, err := m.createTempNamespaceLink(pid)
-	if err != nil {
-		return fmt.Errorf("failed to create namespace link: %v", err)
-	}
-	defer m.removeTempNamespaceLink(nsPath)
-
-	// Open the container's network namespace
-	containerNs, err := netns.GetFromPath(nsPath)
-	if err != nil {
-		return fmt.Errorf("failed to get container netns: %v", err)
-	}
-	defer func() {
-		if err := containerNs.Close(); err != nil {
-			m.logger.V(1).Info("Failed to close container namespace", "error", err)
-		}
-	}()
-
-	// Get current (host) namespace
-	hostNs, err := netns.Get()
-	if err != nil {
-		return fmt.Errorf("failed to get host netns: %v", err)
-	}
-	defer func() {
-		if err := hostNs.Close(); err != nil {
-			m.logger.V(1).Info("Failed to close host namespace", "error", err)
-		}
-	}()
-
-	// Switch to container namespace
-	if err := netns.Set(containerNs); err != nil {
-		return fmt.Errorf("failed to switch to container netns: %v", err)
-	}
-
-	// Ensure we switch back to host namespace
-	defer func() {
-		if err := netns.Set(hostNs); err != nil {
-			m.logger.V(3).Error(err, "Failed to switch back to host namespace")
-		}
-	}()
-
-	// Find the interface in the container namespace
+	// Find the interface in the current namespace
 	link, err := netlink.LinkByName(oldName)
 	if err != nil {
-		return fmt.Errorf("failed to find link %s in container: %v", oldName, err)
+		return fmt.Errorf("failed to find link %s in current namespace: %v", oldName, err)
 	}
 
 	// Rename interface if needed
 	if newName != "" && oldName != newName {
 		// Check if target interface name already exists
 		if _, err := netlink.LinkByName(newName); err == nil {
-			return fmt.Errorf("interface %s already exists in container, cannot rename %s",
+			return fmt.Errorf("interface %s already exists, cannot rename %s",
 				newName, oldName)
 		}
 
 		if err := netlink.LinkSetName(link, newName); err != nil {
 			return fmt.Errorf("failed to rename interface %s to %s: %v", oldName, newName, err)
 		}
-		
+
 		// Re-get the link with new name, with retry for timing issues
 		var retryErr error
 		for i := 0; i < 3; i++ {
@@ -670,12 +622,65 @@ func (m *Manager) configureInterfaceInNetns(
 		}
 	}
 
-	m.logger.V(3).Info("Configured interface in container",
+	m.logger.V(3).Info("Configured interface in current namespace",
 		"interface", newName,
 		"ip", ipAddr,
 		"mac", macAddr,
 		"mtu", mtu,
 		"gateway", gateway)
+
+	return nil
+}
+
+// configureInterfaceInContainer configures an interface inside a container using Docker ID.
+// This eliminates the need for filesystem operations by using netns.GetFromDocker.
+func (m *Manager) configureInterfaceInContainer(
+	containerID, oldName, newName, ipAddr, macAddr, mtu, gateway string,
+) error {
+	// Get container namespace directly from Docker ID (eliminates filesystem operations)
+	containerNs, err := netns.GetFromDocker(containerID)
+	if err != nil {
+		return fmt.Errorf("failed to get container netns: %v", err)
+	}
+	defer func() {
+		if err := containerNs.Close(); err != nil {
+			m.logger.V(1).Info("Failed to close container namespace", "error", err)
+		}
+	}()
+
+	// Get current (host) namespace
+	hostNs, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("failed to get host netns: %v", err)
+	}
+	defer func() {
+		if err := hostNs.Close(); err != nil {
+			m.logger.V(1).Info("Failed to close host namespace", "error", err)
+		}
+	}()
+
+	// Switch to container namespace
+	if err := netns.Set(containerNs); err != nil {
+		return fmt.Errorf("failed to switch to container netns: %v", err)
+	}
+
+	// Ensure we switch back to host namespace
+	defer func() {
+		if err := netns.Set(hostNs); err != nil {
+			m.logger.V(3).Error(err, "Failed to switch back to host namespace")
+		}
+	}()
+
+	// Configure the interface within the container namespace
+	if err := m.configureInterfaceInCurrentNs(oldName, newName, ipAddr, macAddr, mtu, gateway); err != nil {
+		return err
+	}
+
+	m.logger.V(2).Info("Configured interface in container using Docker ID",
+		"container_id", containerID[:12],
+		"old_name", oldName,
+		"new_name", newName,
+		"ip_address", ipAddr)
 
 	return nil
 }
@@ -861,7 +866,7 @@ func (m *Manager) configureContainerInterface(
 
 	// Steps 2-7: Configure interface inside container namespace
 	// This mirrors all the ip netns exec commands from ovs-docker
-	if err := m.configureInterfaceInNetns(pid, containerSideName, config.Interface,
+	if err := m.configureInterfaceInContainer(containerID, containerSideName, config.Interface,
 		config.IPAddress, config.MACAddress, config.MTU, config.Gateway); err != nil {
 		return fmt.Errorf("failed to configure interface in container: %v", err)
 	}
@@ -904,64 +909,6 @@ func (m *Manager) findPortsForContainer(ctx context.Context, containerID string)
 	)
 
 	return portNames, nil
-}
-
-// ensureNetnsDirectory ensures the netns directory exists.
-func (m *Manager) ensureNetnsDirectory() error {
-	netnsDir := "/var/run/netns"
-	if _, err := os.Stat(netnsDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(netnsDir, 0o755); err != nil {
-			return fmt.Errorf("failed to create netns directory %s: %v", netnsDir, err)
-		}
-		m.logger.V(3).Info("Created netns directory", "directory", netnsDir)
-	}
-	return nil
-}
-
-// createTempNamespaceLink creates a temporary symbolic link to a container's network namespace.
-func (m *Manager) createTempNamespaceLink(pid int) (string, error) {
-	// Create a temporary symbolic link in /var/run/netns
-	nsName := fmt.Sprintf("tmp-%d", pid)
-	nsPath := filepath.Join("/var/run/netns", nsName)
-	procNsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
-
-	// Check if the process namespace exists
-	if !m.checkFileExists(procNsPath) {
-		return "", fmt.Errorf("process %d network namespace not found", pid)
-	}
-
-	// Remove existing link if it exists
-	if m.checkFileExists(nsPath) {
-		if err := os.Remove(nsPath); err != nil {
-			m.logger.V(1).Info("Failed to remove existing namespace link",
-				"path", nsPath, "error", err)
-		}
-	}
-
-	// Create symbolic link
-	if err := os.Symlink(procNsPath, nsPath); err != nil {
-		return "", fmt.Errorf("failed to create namespace link: %v", err)
-	}
-
-	m.logger.V(3).Info("Created temporary namespace link",
-		"pid", pid,
-		"nsPath", nsPath,
-	)
-
-	return nsPath, nil
-}
-
-// removeTempNamespaceLink removes a temporary namespace link.
-func (m *Manager) removeTempNamespaceLink(nsPath string) {
-	if err := os.Remove(nsPath); err != nil {
-		m.logger.V(3).Error(err, "Failed to remove temporary namespace link", "nsPath", nsPath)
-	}
-}
-
-// checkFileExists checks if a file exists.
-func (m *Manager) checkFileExists(path string) bool {
-	_, err := os.Stat(path)
-	return !os.IsNotExist(err)
 }
 
 // getPortForContainerInterface finds a port for a container interface
@@ -1205,7 +1152,7 @@ func (m *Manager) AddPort(
 	}
 
 	// Configure interface in container (IP, MAC, MTU, Gateway)
-	if err := m.configureInterfaceInNetns(containerInfo.State.Pid, containerSide, interfaceName,
+	if err := m.configureInterfaceInContainer(containerID, containerSide, interfaceName,
 		opts.IPAddress, opts.MACAddress, opts.MTU, opts.Gateway); err != nil {
 		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
 			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)

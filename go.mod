@@ -9,7 +9,7 @@ require (
 	github.com/ovn-org/libovsdb v0.7.0
 	github.com/spf13/viper v1.20.1
 	github.com/vishvananda/netlink v1.3.1
-	github.com/vishvananda/netns v0.0.5
+	github.com/vishvananda/netns v0.0.6-0.20250603211132-596a397987da
 	go.uber.org/zap v1.27.0
 )
 

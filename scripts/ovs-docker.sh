@@ -43,6 +43,7 @@ create_netns_link () {
     fi
 }
 
+# shellcheck disable=SC2317
 delete_netns_link () {
     rm -f /var/run/netns/"$PID"
 }
