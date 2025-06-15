@@ -560,19 +560,6 @@ func (m *Manager) getContainerFd(
 	return fd, cleanup, nil
 }
 
-// getContainerNetNS gets a network namespace handle for the container with proper cleanup.
-func (m *Manager) getContainerNetNS(
-	ctx context.Context,
-	containerID string,
-) (netns.NsHandle, func(), error) {
-	fd, cleanup, err := m.getContainerFd(ctx, containerID)
-	if err != nil {
-		return 0, nil, fmt.Errorf("failed to get container netns fd: %v", err)
-	}
-
-	return netns.NsHandle(fd), cleanup, nil
-}
-
 // generatePortName generates a unique port name for a container.
 func (m *Manager) generatePortName(containerID string) string {
 	// Use first 12 characters of container ID as the port name
@@ -608,234 +595,31 @@ func (m *Manager) setLinkUp(interfaceName string) error {
 	return nil
 }
 
-// moveLinkToNetns moves a network interface to a different network namespace.
-func (m *Manager) moveLinkToNetns(interfaceName, containerID string) error {
-	link, err := netlink.LinkByName(interfaceName)
-	if err != nil {
-		// Debug: List available interfaces to help diagnose the issue
-		if links, listErr := netlink.LinkList(); listErr == nil {
-			interfaceNames := make([]string, len(links))
-			for i, l := range links {
-				interfaceNames[i] = l.Attrs().Name
-			}
-			m.logger.V(1).Info("Available interfaces when looking for missing link",
-				"missing_interface", interfaceName,
-				"container_id", containerID[:12],
-				"available_interfaces", strings.Join(interfaceNames, ", "))
-		}
-		return fmt.Errorf("failed to find link %s: %v", interfaceName, err)
-	}
-
-	fd, cleanup, err := m.getContainerFd(context.Background(), containerID)
-	if err != nil {
-		return fmt.Errorf(
-			"failed to get file descriptor for container %s: %v",
-			containerID[:12],
-			err,
-		)
-	}
-	defer cleanup() // Ensure FD is properly closed
-
-	if err := netlink.LinkSetNsFd(link, fd); err != nil {
-		return fmt.Errorf("failed to move link %s to netns %d: %v", interfaceName, fd, err)
-	}
-
-	m.logger.V(3).Info("Moved interface to container namespace",
-		"interface", interfaceName)
-
-	return nil
-}
-
-// configureInterfaceInCurrentNs configures an interface in the current network namespace.
-func (m *Manager) configureInterfaceInCurrentNs(
-	oldName, newName, ipAddr, macAddr, mtu, gateway string,
-) error {
-	// Find the interface in the current namespace
-	link, err := netlink.LinkByName(oldName)
-	if err != nil {
-		return fmt.Errorf("failed to find link %s in current namespace: %v", oldName, err)
-	}
-
-	// Rename interface if needed
-	if newName != "" && oldName != newName {
-		// Check if target interface name already exists
-		if _, err := netlink.LinkByName(newName); err == nil {
-			return fmt.Errorf("interface %s already exists, cannot rename %s",
-				newName, oldName)
-		}
-
-		if err := netlink.LinkSetName(link, newName); err != nil {
-			return fmt.Errorf("failed to rename interface %s to %s: %v", oldName, newName, err)
-		}
-
-		// Re-get the link with new name, with retry for timing issues
-		var retryErr error
-		for i := range 3 {
-			if link, retryErr = netlink.LinkByName(newName); retryErr == nil {
-				break
-			}
-			m.logger.V(2).Info("Retrying to find renamed interface",
-				"attempt", i+1, "oldName", oldName, "newName", newName, "error", retryErr)
-			time.Sleep(time.Millisecond * 50) // Small delay
-		}
-		if retryErr != nil {
-			return fmt.Errorf("failed to find renamed link %s (from %s): %v",
-				newName, oldName, retryErr)
-		}
-	}
-
-	// Set MAC address if provided
-	if macAddr != "" {
-		mac, err := net.ParseMAC(macAddr)
-		if err != nil {
-			return fmt.Errorf("invalid MAC address %s: %v", macAddr, err)
-		}
-		if err := netlink.LinkSetHardwareAddr(link, mac); err != nil {
-			return fmt.Errorf("failed to set MAC address: %v", err)
-		}
-	}
-
-	// Set MTU if provided
-	if mtu != "" {
-		mtuInt, err := strconv.Atoi(mtu)
-		if err != nil {
-			return fmt.Errorf("invalid MTU %s: %v", mtu, err)
-		}
-		if err := netlink.LinkSetMTU(link, mtuInt); err != nil {
-			return fmt.Errorf("failed to set MTU: %v", err)
-		}
-	}
-
-	// Configure IP address
-	if ipAddr != "" {
-		addr, err := netlink.ParseAddr(ipAddr)
-		if err != nil {
-			return fmt.Errorf("failed to parse IP address %s: %v", ipAddr, err)
-		}
-		if err := netlink.AddrAdd(link, addr); err != nil {
-			// Check if address already exists
-			if !strings.Contains(err.Error(), "file exists") {
-				return fmt.Errorf("failed to add IP address: %v", err)
-			}
-		}
-	}
-
-	// Set interface up
-	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("failed to set interface up: %v", err)
-	}
-
-	// Configure gateway if provided
-	if gateway != "" {
-		gw := net.ParseIP(gateway)
-		if gw == nil {
-			return fmt.Errorf("invalid gateway IP %s", gateway)
-		}
-
-		// Create default route (0.0.0.0/0 for IPv4, ::/0 for IPv6)
-		var dst *net.IPNet
-		if gw.To4() != nil {
-			// IPv4 default route
-			_, dst, _ = net.ParseCIDR("0.0.0.0/0")
-		} else {
-			// IPv6 default route
-			_, dst, _ = net.ParseCIDR("::/0")
-		}
-
-		route := &netlink.Route{
-			LinkIndex: link.Attrs().Index,
-			Dst:       dst,
-			Gw:        gw,
-		}
-
-		if err := netlink.RouteAdd(route); err != nil {
-			// Check if route already exists or if it's a more specific error
-			errStr := err.Error()
-			if strings.Contains(errStr, "file exists") {
-				m.logger.V(2).Info("Default route already exists, skipping", "gateway", gateway)
-			} else if strings.Contains(errStr, "network is unreachable") {
-				// This often happens when the gateway is not in the same subnet as the interface IP
-				m.logger.V(1).Info("Gateway unreachable - this may be expected for certain network configurations",
-					"gateway", gateway, "interface", newName, "ip", ipAddr, "error", err)
-				// Don't fail the operation for now, as this might be intentional
-			} else {
-				return fmt.Errorf("failed to add gateway route: %v", err)
-			}
-		} else {
-			m.logger.V(2).Info("Added default gateway route", "gateway", gateway, "interface", newName)
-		}
-	}
-
-	m.logger.V(3).Info("Configured interface in current namespace",
-		"interface", newName,
-		"ip", ipAddr,
-		"mac", macAddr,
-		"mtu", mtu,
-		"gateway", gateway)
-
-	// In configureInterfaceInCurrentNs, after setting the interface up:
-	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("failed to set interface up: %v", err)
-	}
-
-	// Add ARP neighbor entry for the gateway if provided
-	if ipAddr != "" {
-		// Generate a deterministic MAC address for the gateway
-		ipAddrMAC, err := generateDeterministicMAC(ipAddr)
-		if err != nil {
-			m.logger.V(1).Info("Failed to generate gateway MAC", "gateway", gateway, "error", err)
-		} else {
-			if err := m.addARPNeighbor(link, ipAddr, ipAddrMAC.String()); err != nil {
-				m.logger.V(1).Info("Failed to add interface ARP entry", "error", err)
-				// Don't fail the operation for ARP neighbor failures
-			}
-		}
-	}
-
-	return nil
-}
-
 // configureInterfaceInContainer configures an interface inside a container using Docker ID.
 func (m *Manager) configureInterfaceInContainer(
 	ctx context.Context,
 	containerID, oldName, newName, ipAddr, macAddr, mtu, gateway string,
 ) error {
-	// Get container namespace with proper cleanup
-	containerNs, containerCleanup, err := m.getContainerNetNS(ctx, containerID)
+	// Get container namespace file descriptor
+	fd, cleanup, err := m.getContainerFd(ctx, containerID)
 	if err != nil {
-		return fmt.Errorf("failed to get container netns: %v", err)
+		return fmt.Errorf("failed to get container fd: %v", err)
 	}
-	defer containerCleanup()
+	defer cleanup()
 
-	// Get current (host) namespace
-	hostNs, err := netns.Get()
+	// Create a netlink handle for the container namespace
+	nsHandle, err := netlink.NewHandleAt(netns.NsHandle(fd))
 	if err != nil {
-		return fmt.Errorf("failed to get host netns: %v", err)
+		return fmt.Errorf("failed to create netlink handle for container namespace: %v", err)
 	}
-	defer func() {
-		if err := hostNs.Close(); err != nil {
-			m.logger.V(1).Info("Failed to close host namespace", "error", err)
-		}
-	}()
+	defer nsHandle.Delete()
 
-	// Switch to container namespace
-	if err := netns.Set(containerNs); err != nil {
-		return fmt.Errorf("failed to switch to container netns: %v", err)
-	}
-
-	// Ensure we switch back to host namespace
-	defer func() {
-		if err := netns.Set(hostNs); err != nil {
-			m.logger.V(3).Error(err, "Failed to switch back to host namespace")
-		}
-	}()
-
-	// Configure the interface within the container namespace
-	if err := m.configureInterfaceInCurrentNs(oldName, newName, ipAddr, macAddr, mtu, gateway); err != nil {
+	// Configure the interface within the container namespace using the handle
+	if err := m.configureInterfaceWithHandle(nsHandle, oldName, newName, ipAddr, macAddr, mtu, gateway); err != nil {
 		return err
 	}
 
-	m.logger.V(2).Info("Configured interface in container using optimized FD access",
+	m.logger.V(2).Info("Configured interface in container using modern netlink handle",
 		"container_id", containerID[:12],
 		"old_name", oldName,
 		"new_name", newName,
@@ -889,18 +673,17 @@ func (m *Manager) createVethPairWithNames(hostSide, containerSide string, fd int
 		)
 	}
 
-	// Verify both interfaces exist after creation
+	// Verify host side interface exists after creation
 	if _, err := netlink.LinkByName(hostSide); err != nil {
 		return fmt.Errorf("host side interface %s not found after creation: %v", hostSide, err)
 	}
 
-	if _, err := netlink.LinkByName(containerSide); err != nil {
-		return fmt.Errorf(
-			"container side interface %s not found after creation: %v",
-			containerSide,
-			err,
-		)
-	}
+	// Note: Container side interface is created directly in the container namespace
+	// and cannot be verified from the host namespace
+	m.logger.V(3).Info("Veth pair created successfully",
+		"host_side", hostSide,
+		"container_side", containerSide,
+	)
 
 	return nil
 }
@@ -1347,38 +1130,22 @@ func (m *Manager) isPortFullyConfigured(
 	containerID, interfaceName string,
 	opts *ContainerOVSConfig,
 ) (bool, error) {
-	// Check if the container interface exists and has the expected configuration
-	containerNs, containerCleanup, err := m.getContainerNetNS(ctx, containerID)
+	// Get container namespace file descriptor
+	fd, cleanup, err := m.getContainerFd(ctx, containerID)
 	if err != nil {
-		return false, fmt.Errorf("failed to get container netns: %v", err)
+		return false, fmt.Errorf("failed to get container fd: %v", err)
 	}
-	defer containerCleanup()
+	defer cleanup()
 
-	// Get current (host) namespace
-	hostNs, err := netns.Get()
+	// Create a netlink handle for the container namespace
+	nsHandle, err := netlink.NewHandleAt(netns.NsHandle(fd))
 	if err != nil {
-		return false, fmt.Errorf("failed to get host netns: %v", err)
+		return false, fmt.Errorf("failed to create netlink handle for container namespace: %v", err)
 	}
-	defer func() {
-		if err := hostNs.Close(); err != nil {
-			m.logger.V(1).Info("Failed to close host namespace", "error", err)
-		}
-	}()
-
-	// Switch to container namespace
-	if err := netns.Set(containerNs); err != nil {
-		return false, fmt.Errorf("failed to switch to container netns: %v", err)
-	}
-
-	// Ensure we switch back to host namespace
-	defer func() {
-		if err := netns.Set(hostNs); err != nil {
-			m.logger.V(3).Error(err, "Failed to switch back to host namespace")
-		}
-	}()
+	defer nsHandle.Delete()
 
 	// Check if the target interface exists in the container
-	link, err := netlink.LinkByName(interfaceName)
+	link, err := nsHandle.LinkByName(interfaceName)
 	if err != nil {
 		// Interface doesn't exist in container
 		return false, nil
@@ -1391,7 +1158,7 @@ func (m *Manager) isPortFullyConfigured(
 
 	// Check IP address if specified
 	if opts.IPAddress != "" {
-		addrs, err := netlink.AddrList(link, 0) // 0 for all families
+		addrs, err := nsHandle.AddrList(link, 0) // 0 for all families
 		if err != nil {
 			return false, fmt.Errorf("failed to list addresses: %v", err)
 		}
@@ -1437,7 +1204,7 @@ func (m *Manager) isPortFullyConfigured(
 
 	// Check default route if gateway is specified
 	if opts.Gateway != "" {
-		routes, err := netlink.RouteList(link, 0) // 0 for all families
+		routes, err := nsHandle.RouteList(link, 0) // 0 for all families
 		if err != nil {
 			return false, fmt.Errorf("failed to list routes: %v", err)
 		}
@@ -1587,14 +1354,11 @@ func (m *Manager) createAndConfigurePort(
 		return fmt.Errorf("failed to set host side up: %v", err)
 	}
 
-	// Move container side to container namespace and configure
-	if err := m.moveLinkToNetns(containerSide, containerID); err != nil {
-		if delErr := m.removePortFromOVSBridgeCommand(hostSide); delErr != nil {
-			m.logger.V(1).
-				Info("Failed to remove port from OVS bridge during cleanup", "error", delErr)
-		}
-		return fmt.Errorf("failed to move link to container: %v", err)
-	}
+	// Container side is already in the correct namespace (created with PeerNamespace)
+	m.logger.V(3).Info("Container side interface already in target namespace",
+		"container_side", containerSide,
+		"container_id", containerID[:12],
+	)
 
 	// Configure interface in container (IP, MAC, MTU, Gateway)
 	if err := m.configureInterfaceInContainer(ctx, containerID, containerSide, interfaceName,
@@ -1922,5 +1686,185 @@ func (m *Manager) addARPNeighbor(link netlink.Link, neighborIP, neighborMAC stri
 
 	m.logger.V(2).
 		Info("Added ARP neighbor", "ip", neighborIP, "mac", neighborMAC, "interface", link.Attrs().Name)
+	return nil
+}
+
+// addARPNeighborWithHandle adds a static ARP neighbor entry using a specific netlink handle.
+func (m *Manager) addARPNeighborWithHandle(
+	handle *netlink.Handle,
+	link netlink.Link,
+	ipAddr, macAddr string,
+) error {
+	ip := net.ParseIP(ipAddr)
+	if ip == nil {
+		return fmt.Errorf("invalid IP address: %s", ipAddr)
+	}
+
+	mac, err := net.ParseMAC(macAddr)
+	if err != nil {
+		return fmt.Errorf("invalid MAC address: %s", macAddr)
+	}
+
+	neigh := &netlink.Neigh{
+		LinkIndex:    link.Attrs().Index,
+		State:        0x02, // NUD_PERMANENT - permanent ARP entry
+		IP:           ip,
+		HardwareAddr: mac,
+	}
+
+	if err := handle.NeighAdd(neigh); err != nil {
+		if strings.Contains(err.Error(), "file exists") {
+			m.logger.V(3).Info("ARP neighbor entry already exists", "ip", ipAddr, "mac", macAddr)
+			return nil
+		}
+		return fmt.Errorf("failed to add neighbor entry: %v", err)
+	}
+
+	m.logger.V(3).Info("Added static ARP neighbor entry", "ip", ipAddr, "mac", macAddr)
+	return nil
+}
+
+// configureInterfaceWithHandle configures an interface using a specific netlink handle.
+func (m *Manager) configureInterfaceWithHandle(
+	handle *netlink.Handle,
+	oldName, newName, ipAddr, macAddr, mtu, gateway string,
+) error {
+	// Find the interface in the target namespace
+	link, err := handle.LinkByName(oldName)
+	if err != nil {
+		return fmt.Errorf("failed to find link %s in target namespace: %v", oldName, err)
+	}
+
+	// Rename interface if needed
+	if newName != "" && oldName != newName {
+		// Check if target interface name already exists
+		if _, err := handle.LinkByName(newName); err == nil {
+			return fmt.Errorf("interface %s already exists, cannot rename %s",
+				newName, oldName)
+		}
+
+		if err := handle.LinkSetName(link, newName); err != nil {
+			return fmt.Errorf("failed to rename interface %s to %s: %v", oldName, newName, err)
+		}
+
+		// Re-get the link with new name, with retry for timing issues
+		var retryErr error
+		for i := range 3 {
+			if link, retryErr = handle.LinkByName(newName); retryErr == nil {
+				break
+			}
+			m.logger.V(2).Info("Retrying to find renamed interface",
+				"attempt", i+1, "oldName", oldName, "newName", newName, "error", retryErr)
+			time.Sleep(time.Millisecond * 50) // Small delay
+		}
+		if retryErr != nil {
+			return fmt.Errorf("failed to find renamed link %s (from %s): %v",
+				newName, oldName, retryErr)
+		}
+	}
+
+	// Set MAC address if provided
+	if macAddr != "" {
+		mac, err := net.ParseMAC(macAddr)
+		if err != nil {
+			return fmt.Errorf("invalid MAC address %s: %v", macAddr, err)
+		}
+		if err := handle.LinkSetHardwareAddr(link, mac); err != nil {
+			return fmt.Errorf("failed to set MAC address: %v", err)
+		}
+	}
+
+	// Set MTU if provided
+	if mtu != "" {
+		mtuInt, err := strconv.Atoi(mtu)
+		if err != nil {
+			return fmt.Errorf("invalid MTU %s: %v", mtu, err)
+		}
+		if err := handle.LinkSetMTU(link, mtuInt); err != nil {
+			return fmt.Errorf("failed to set MTU: %v", err)
+		}
+	}
+
+	// Configure IP address
+	if ipAddr != "" {
+		addr, err := netlink.ParseAddr(ipAddr)
+		if err != nil {
+			return fmt.Errorf("failed to parse IP address %s: %v", ipAddr, err)
+		}
+		if err := handle.AddrAdd(link, addr); err != nil {
+			// Check if address already exists
+			if !strings.Contains(err.Error(), "file exists") {
+				return fmt.Errorf("failed to add IP address: %v", err)
+			}
+		}
+	}
+
+	// Set interface up
+	if err := handle.LinkSetUp(link); err != nil {
+		return fmt.Errorf("failed to set interface up: %v", err)
+	}
+
+	// Configure gateway if provided
+	if gateway != "" {
+		gw := net.ParseIP(gateway)
+		if gw == nil {
+			return fmt.Errorf("invalid gateway IP %s", gateway)
+		}
+
+		// Create default route (0.0.0.0/0 for IPv4, ::/0 for IPv6)
+		var dst *net.IPNet
+		if gw.To4() != nil {
+			// IPv4 default route
+			_, dst, _ = net.ParseCIDR("0.0.0.0/0")
+		} else {
+			// IPv6 default route
+			_, dst, _ = net.ParseCIDR("::/0")
+		}
+
+		route := &netlink.Route{
+			LinkIndex: link.Attrs().Index,
+			Dst:       dst,
+			Gw:        gw,
+		}
+
+		if err := handle.RouteAdd(route); err != nil {
+			// Check if route already exists or if it's a more specific error
+			errStr := err.Error()
+			if strings.Contains(errStr, "file exists") {
+				m.logger.V(2).Info("Default route already exists, skipping", "gateway", gateway)
+			} else if strings.Contains(errStr, "network is unreachable") {
+				// This often happens when the gateway is not in the same subnet as the interface IP
+				m.logger.V(1).Info("Gateway unreachable - this may be expected for certain network configurations",
+					"gateway", gateway, "interface", newName, "ip", ipAddr, "error", err)
+				// Don't fail the operation for now, as this might be intentional
+			} else {
+				return fmt.Errorf("failed to add gateway route: %v", err)
+			}
+		} else {
+			m.logger.V(2).Info("Added default gateway route", "gateway", gateway, "interface", newName)
+		}
+	}
+
+	// Add ARP neighbor entry for the gateway if provided
+	if ipAddr != "" {
+		// Generate a deterministic MAC address for the gateway
+		ipAddrMAC, err := generateDeterministicMAC(ipAddr)
+		if err != nil {
+			m.logger.V(1).Info("Failed to generate gateway MAC", "gateway", gateway, "error", err)
+		} else {
+			if err := m.addARPNeighborWithHandle(handle, link, ipAddr, ipAddrMAC.String()); err != nil {
+				m.logger.V(1).Info("Failed to add interface ARP entry", "error", err)
+				// Don't fail the operation for ARP neighbor failures
+			}
+		}
+	}
+
+	m.logger.V(3).Info("Configured interface with handle",
+		"interface", newName,
+		"ip", ipAddr,
+		"mac", macAddr,
+		"mtu", mtu,
+		"gateway", gateway)
+
 	return nil
 }
