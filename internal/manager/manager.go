@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
@@ -42,6 +43,40 @@ const (
 	// InterfaceNameLimit is the maximum length for network interface names in Linux.
 	InterfaceNameLimit = 15
 )
+
+// OVS port manager namespace for UUID generation.
+var ovsPortManagerNamespace = uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+
+// generateDeterministicMAC creates a deterministic MAC address based on an IP address.
+// This ensures that the same IP always generates the same MAC address for ARP neighbor consistency.
+func generateDeterministicMAC(ipAddr string) (net.HardwareAddr, error) {
+	if ipAddr == "" {
+		return nil, fmt.Errorf("IP address cannot be empty")
+	}
+
+	// Parse the IP to validate it
+	ip := net.ParseIP(ipAddr)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP address: %s", ipAddr)
+	}
+
+	// Generate a deterministic UUID based on the IP address
+	macUUID := uuid.NewSHA1(ovsPortManagerNamespace, []byte("mac:"+ipAddr))
+
+	// Convert UUID to MAC address
+	// Use the first 6 bytes of the UUID as MAC address
+	uuidBytes := macUUID[:]
+
+	// Create MAC address with local administered bit set (bit 1 of first octet)
+	// This ensures it's a locally administered MAC and won't conflict with real hardware
+	mac := make(net.HardwareAddr, 6)
+	copy(mac, uuidBytes[:6])
+
+	// Set the locally administered bit (bit 1) and clear multicast bit (bit 0)
+	mac[0] = (mac[0] & 0xFC) | 0x02 // xxxx xx10 pattern
+
+	return mac, nil
+}
 
 // Manager manages OVS ports for Docker containers.
 type Manager struct {
@@ -736,6 +771,25 @@ func (m *Manager) configureInterfaceInCurrentNs(
 		"mac", macAddr,
 		"mtu", mtu,
 		"gateway", gateway)
+
+	// In configureInterfaceInCurrentNs, after setting the interface up:
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("failed to set interface up: %v", err)
+	}
+
+	// Add ARP neighbor entry for the gateway if provided
+	if ipAddr != "" {
+		// Generate a deterministic MAC address for the gateway
+		ipAddrMAC, err := generateDeterministicMAC(ipAddr)
+		if err != nil {
+			m.logger.V(1).Info("Failed to generate gateway MAC", "gateway", gateway, "error", err)
+		} else {
+			if err := m.addARPNeighbor(link, ipAddr, ipAddrMAC.String()); err != nil {
+				m.logger.V(1).Info("Failed to add interface ARP entry", "error", err)
+				// Don't fail the operation for ARP neighbor failures
+			}
+		}
+	}
 
 	return nil
 }
@@ -1826,4 +1880,45 @@ func (m *Manager) getRootUUID() (string, error) {
 		return "", fmt.Errorf("no Open_vSwitch root UUID found")
 	}
 	return rootUUID, nil
+}
+
+// addARPNeighbor adds an ARP neighbor entry for the specified interface.
+func (m *Manager) addARPNeighbor(link netlink.Link, neighborIP, neighborMAC string) error {
+	if neighborIP == "" || neighborMAC == "" {
+		return nil // Skip if either IP or MAC is empty
+	}
+
+	// Parse the neighbor IP address
+	ip := net.ParseIP(neighborIP)
+	if ip == nil {
+		return fmt.Errorf("invalid neighbor IP address: %s", neighborIP)
+	}
+
+	// Parse the neighbor MAC address
+	mac, err := net.ParseMAC(neighborMAC)
+	if err != nil {
+		return fmt.Errorf("invalid neighbor MAC address %s: %v", neighborMAC, err)
+	}
+
+	// Create the neighbor entry
+	neighbor := &netlink.Neigh{
+		LinkIndex:    link.Attrs().Index,
+		State:        0x02, // NUD_PERMANENT - permanent ARP entry
+		IP:           ip,
+		HardwareAddr: mac,
+	}
+
+	// Add the neighbor
+	if err := netlink.NeighAdd(neighbor); err != nil {
+		// Check if neighbor already exists
+		if strings.Contains(err.Error(), "file exists") {
+			m.logger.V(2).Info("ARP neighbor already exists", "ip", neighborIP, "mac", neighborMAC)
+			return nil
+		}
+		return fmt.Errorf("failed to add ARP neighbor %s -> %s: %v", neighborIP, neighborMAC, err)
+	}
+
+	m.logger.V(2).
+		Info("Added ARP neighbor", "ip", neighborIP, "mac", neighborMAC, "interface", link.Attrs().Name)
+	return nil
 }
