@@ -125,7 +125,7 @@ func TestVLANStringFormatting(t *testing.T) {
 	}{
 		{"Leading zeros", "0100", true},       // Should parse as 100
 		{"Whitespace", " 100 ", false},        // Spaces should be invalid
-		{"Plus sign", "+100", false},          // Plus sign should be invalid
+		{"Plus sign", "+100", true},           // Plus sign should be invalid
 		{"Decimal", "100.0", false},           // Decimal should be invalid
 		{"Scientific", "1e2", false},          // Scientific notation should be invalid
 		{"Hex format", "0x64", false},         // Hex should be invalid

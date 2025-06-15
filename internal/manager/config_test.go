@@ -67,11 +67,11 @@ func TestExtractOVSConfig(t *testing.T) {
 			expectedConfig: &ContainerOVSConfig{
 				ContainerID: "test-container-456",
 				IPAddress:   "10.0.0.50/24",
-				Bridge:      "ovsbr0", // default
+				Bridge:      "ovs_bond0", // default
 				Gateway:     "",
 				MTU:         "",
 				MACAddress:  "",
-				Interface:   "eth1", // default
+				Interface:   "bond0", // default
 				VLAN:        "",
 			},
 			expectError: false,
