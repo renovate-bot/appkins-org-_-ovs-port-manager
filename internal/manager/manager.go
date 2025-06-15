@@ -371,8 +371,7 @@ func (m *Manager) handleContainerStop(ctx context.Context, containerID string) e
 		if err := m.removeExternalIPRouting(
 			ovsConfig.ExternalIP,
 			ovsConfig.ExternalGateway,
-			ovsConfig.ExternalInterface,               // Pass the label value first
-			m.config.Network.DefaultExternalInterface, // Pass the default separately
+			containerID, // Pass containerID instead of interface names
 		); err != nil {
 			m.logger.Error(err, "Failed to remove external IP routing rules",
 				"container_id", containerID[:12],
@@ -478,7 +477,7 @@ func (m *Manager) addOVSPort(ctx context.Context, config *ContainerOVSConfig) er
 		if err := m.setupExternalIPRouting(
 			config.ExternalIP,
 			config.ExternalGateway,
-			actualHostInterface, // Use the resolved host interface
+			config.ContainerID, // Pass containerID instead of host interface
 		); err != nil {
 			// If external routing setup fails, we might want to roll back OVS port creation,
 			// or at least log a significant warning. For now, return the error.
@@ -1076,162 +1075,106 @@ func macAddressesEqual(a, b net.HardwareAddr) bool {
 	return true
 }
 
-// setupExternalIPRouting enables IP forwarding and sets up necessary iptables/ARP rules.
+// setupExternalIPRouting sets up external IP routing by creating routes and assigning IPs 
+// to the host-side veth interface. This enables external routing to static IPs.
 // This function should be idempotent.
-func (m *Manager) setupExternalIPRouting(externalIP, externalGateway, hostInterface string) error {
-	m.logger.V(1).Info("Attempting to set up external IP routing",
+func (m *Manager) setupExternalIPRouting(externalIP, externalGateway, containerID string) error {
+	m.logger.V(1).Info("Setting up external IP routing",
 		"external_ip", externalIP,
 		"gateway", externalGateway,
-		"host_interface", hostInterface)
+		"container_id", containerID[:12])
 
-	// 1. Enable IP Forwarding
+	// 1. Enable IP forwarding
 	if err := m.enableIPForwarding(); err != nil {
 		return fmt.Errorf("failed to enable IP forwarding: %w", err)
 	}
-	m.logger.V(2).Info("IP forwarding enabled")
 
-	// 2. Assign External IP to Host Interface (if not already present)
-	// This makes the host respond to ARP requests for the externalIP on the hostInterface.
-	if err := m.assignIPToInterface(externalIP, hostInterface); err != nil {
-		return fmt.Errorf(
-			"failed to assign external IP %s to host interface %s: %w",
-			externalIP,
-			hostInterface,
-			err,
-		)
+	// 2. Get the host-side veth interface name
+	portName := m.generatePortName(containerID)
+	hostSide := portName + "_l"
+
+	// 3. Add IP address to host-side veth interface 
+	// This makes the external IP routable through the veth pair
+	if err := m.assignIPToInterface(externalIP, hostSide); err != nil {
+		return fmt.Errorf("failed to assign external IP %s to host interface %s: %w", 
+			externalIP, hostSide, err)
 	}
-	m.logger.V(2).
-		Info("External IP assigned to host interface", "ip_address", externalIP, "interface", hostInterface)
+	m.logger.V(2).Info("External IP assigned to host-side veth interface", 
+		"ip_address", externalIP, "interface", hostSide)
 
-	// 3. Add static route for the external IP via the container's OVS bridge IP (if applicable)
-	// This step might be more complex depending on how OVS is configured and whether the container
-	// is directly on an OVS bridge or if there's another layer of networking.
-	// For now, we assume the host needs to route traffic for externalIP to the container.
-	// This part needs careful consideration of the network topology.
-	// If the container's internal IP (from OVSIPAddressLabel) is on the same subnet as the host's
-	// interface on the OVS bridge, direct routing might work.
-	// If the externalIP is meant to be NATed or proxied, the rules would be different.
-
-	// For a simple routed setup (not NAT), we might not need a specific static route on the host
-	// if the container's IP is advertised correctly (e.g. via BGP, or if the gateway knows about it).
-	// The primary goal here is to make the *host* respond to ARP for externalIP and forward packets.
-
-	// 4. Setup IPTables rules for FORWARDING (and potentially NAT if needed)
-	// Allow forwarding for the external IP.
-	// Example: iptables -A FORWARD -d <externalIP>/32 -j ACCEPT
-	// Example: iptables -A FORWARD -s <externalIP>/32 -j ACCEPT
-	// These rules assume that the default FORWARD policy might be DROP.
-	// We need to ensure that traffic to and from the externalIP is allowed.
-
-	if err := m.ensureIPTablesForwardRule("CREATE", externalIP); err != nil {
-		return fmt.Errorf("failed to add iptables FORWARD rule for %s: %w", externalIP, err)
+	// 4. Add specific route for the external IP through the host-side veth interface
+	if err := m.addExternalRoute(externalIP, hostSide); err != nil {
+		// Try to clean up the IP assignment if route addition fails
+		if cleanupErr := m.removeIPFromInterface(externalIP, hostSide); cleanupErr != nil {
+			m.logger.V(1).Info("Failed to cleanup IP assignment after route failure", 
+				"error", cleanupErr, "ip", externalIP, "interface", hostSide)
+		}
+		return fmt.Errorf("failed to add external route for %s: %w", externalIP, err)
 	}
-	m.logger.V(2).Info("IPTables FORWARD rule added for external IP", "ip_address", externalIP)
+	m.logger.V(2).Info("External route added", "ip_address", externalIP, "interface", hostSide)
 
-	// 5. ARP Configuration (e.g., proxy_arp or ensuring host responds)
-	// The assignIPToInterface step should make the host respond to ARP.
-	// If using proxy ARP for a different subnet, more config would be needed here.
-	// For now, direct IP assignment is assumed.
-
-	// 6. Set up Gateway for the external IP if specified
-	// This is tricky. If externalGateway is provided, it implies that the *host*
-	// should use this gateway for traffic originating *from* the externalIP, or that
-	// routes need to be set up on the host to direct traffic for the externalIP's network
-	// via this gateway. This usually means the externalGateway is on the same L2 segment
-	// as the hostInterface.
-
-	// If the externalGateway is for the *container*, that should be configured *inside* the container.
-	// The current labels OVSExternalGatewayLabel implies it's for the host-level routing setup.
-
-	// If externalGateway is provided, add a route on the host for the externalIP's network
-	// or a default route for traffic sourced from externalIP.
-	// This is highly dependent on the desired network architecture.
-	// A common scenario: externalIP is an additional IP on the host, and externalGateway is the
-	// upstream router for the subnet that externalIP belongs to.
-	// If externalIP is, for example, 10.0.0.100/24 and externalGateway is 10.0.0.1,
-	// the host needs a route for 10.0.0.0/24 via hostInterface, and 10.0.0.1 should be reachable.
-	// The assignIPToInterface(externalIP + "/prefix", hostInterface) handles adding the IP.
-	// If externalGateway is different from the host's main default gateway, specific routes might be needed.
-
-	// For now, we assume assignIPToInterface handles making the IP reachable on the local network.
-	// If externalGateway is specified and is different from the host's default gateway,
-	// and we need to route traffic for the externalIP specifically through it,
-	// policy-based routing (ip rule add from <externalIP> table <custom_table>) might be needed.
-	// This is advanced and likely out of scope for initial implementation without more specific requirements.
-	// We will log if a gateway is provided but not explicitly used in a complex way yet.
+	// 5. Add gateway route if specified
 	if externalGateway != "" {
-		m.logger.V(1).
-			Info("External gateway specified, ensure host routing is configured appropriately",
-				"external_gateway", externalGateway,
-				"external_ip", externalIP)
-
-		// Potentially add a specific route here if needed, e.g.,
-		// ip route add <network_of_external_ip> via <externalGateway> dev <hostInterface>
-		// This requires knowing the prefix/network of externalIP.
-		// For simplicity, we assume the IP assignment and existing host routes are sufficient.
+		if err := m.addExternalGatewayRoute(externalIP, externalGateway, hostSide); err != nil {
+			m.logger.V(1).Info("Failed to add gateway route, continuing", 
+				"error", err, "gateway", externalGateway)
+			// Don't fail the entire operation for gateway route issues
+		} else {
+			m.logger.V(2).Info("External gateway route added", 
+				"gateway", externalGateway, "interface", hostSide)
+		}
 	}
 
-	m.logger.V(1).Info("External IP routing setup appears complete", "external_ip", externalIP)
+	m.logger.V(1).Info("External IP routing setup complete", 
+		"external_ip", externalIP, "interface", hostSide)
 	return nil
 }
 
-// removeExternalIPRouting removes the configuration set up by setupExternalIPRouting.
+// removeExternalIPRouting removes the external routing configuration.
 // This function should be idempotent.
-func (m *Manager) removeExternalIPRouting(
-	externalIP, externalGateway, labeledHostInterface, defaultHostInterface string,
-) error {
-	m.logger.V(1).Info("Attempting to remove external IP routing",
+func (m *Manager) removeExternalIPRouting(externalIP, externalGateway, containerID string) error {
+	m.logger.V(1).Info("Removing external IP routing",
 		"external_ip", externalIP,
 		"gateway", externalGateway,
-		"labeled_host_interface", labeledHostInterface,
-		"default_host_interface", defaultHostInterface)
+		"container_id", containerID[:12])
 
-	actualHostInterface := m.config.Network.GetHostInterfaceName(labeledHostInterface)
-	if actualHostInterface == "" {
-		// This case should ideally not be hit if DefaultExternalInterface is configured and validated.
-		// If GetHostInterfaceName returns empty, it means both label and default were empty.
-		m.logger.Error(
-			nil,
-			"Cannot determine host interface for external IP cleanup; label and default are empty",
-			"external_ip",
-			externalIP,
-		)
-		return fmt.Errorf("host interface for external IP %s cleanup is unknown", externalIP)
-	}
+	// Get the host-side veth interface name
+	portName := m.generatePortName(containerID)
+	hostSide := portName + "_l"
 
-	m.logger.V(2).
-		Info("Resolved host interface for cleanup", "actual_host_interface", actualHostInterface)
-
-	// 1. Remove IPTables FORWARD rule
-	// Use "DELETE" action for ensureIPTablesForwardRule
-	if err := m.ensureIPTablesForwardRule("DELETE", externalIP); err != nil {
-		// Log error but continue, as other cleanup steps might succeed
-		m.logger.Error(err, "Failed to remove iptables FORWARD rule", "external_ip", externalIP)
+	// 1. Remove external route
+	if err := m.removeExternalRoute(externalIP, hostSide); err != nil {
+		m.logger.V(1).Info("Failed to remove external route", 
+			"error", err, "ip", externalIP, "interface", hostSide)
+		// Continue with cleanup even if route removal fails
 	} else {
-		m.logger.V(2).Info("IPTables FORWARD rule removed for external IP", "ip_address", externalIP)
+		m.logger.V(2).Info("External route removed", 
+			"ip_address", externalIP, "interface", hostSide)
 	}
 
-	// 2. Remove External IP from Host Interface
-	// This should be done carefully, especially if other services might use the IP.
-	// Idempotency is key: only remove if it was added by this manager or matches config.
-	// The netlink.AddrDel command is idempotent.
-	if err := m.removeIPFromInterface(externalIP, actualHostInterface); err != nil {
-		m.logger.Error(err, "Failed to remove external IP from host interface",
-			"external_ip", externalIP, "interface", actualHostInterface)
+	// 2. Remove gateway route if it was configured
+	if externalGateway != "" {
+		if err := m.removeExternalGatewayRoute(externalIP, externalGateway, hostSide); err != nil {
+			m.logger.V(1).Info("Failed to remove gateway route", 
+				"error", err, "gateway", externalGateway)
+			// Continue with cleanup
+		} else {
+			m.logger.V(2).Info("External gateway route removed", 
+				"gateway", externalGateway, "interface", hostSide)
+		}
+	}
+
+	// 3. Remove IP assignment from host-side veth interface
+	if err := m.removeIPFromInterface(externalIP, hostSide); err != nil {
+		m.logger.V(1).Info("Failed to remove IP from host interface", 
+			"error", err, "ip", externalIP, "interface", hostSide)
+		// Continue even if IP removal fails
 	} else {
-		m.logger.V(2).Info("External IP removed from host interface", "ip_address", externalIP, "interface", actualHostInterface)
+		m.logger.V(2).Info("External IP removed from host-side veth interface", 
+			"ip_address", externalIP, "interface", hostSide)
 	}
 
-	// 3. IP Forwarding: Generally, we don't disable IP forwarding globally when a single container
-	// stops, as other containers or system services might rely on it.
-	// Disabling it should be a system-level decision or tied to the lifecycle of the manager itself
-	// if no other containers require it. For now, we leave it enabled.
-	// If this needs to be conditional, we'd need to track active users of IP forwarding.
-	m.logger.V(2).Info("IP forwarding state is not changed during individual container cleanup.")
-
-	// 4. Static routes or ARP rules: If specific static routes or ARP entries were added for this IP,
-	// they should be removed here. The current setup relies on IP assignment and iptables.
-
-	m.logger.V(1).Info("External IP routing cleanup attempt complete", "external_ip", externalIP)
-	return nil // Return nil even if some sub-steps failed, to allow other cleanup.
+	m.logger.V(1).Info("External IP routing cleanup complete", 
+		"external_ip", externalIP, "interface", hostSide)
+	return nil // Return nil even if some sub-steps failed, to allow other cleanup
 }

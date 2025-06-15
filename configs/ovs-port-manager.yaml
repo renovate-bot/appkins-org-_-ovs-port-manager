@@ -40,6 +40,24 @@ network:
   # Handle network namespaces
   handle_netns: true
 
+  # Enable external IP routing feature
+  # When enabled, containers can use external routing labels to set up
+  # static IP routes through host-side veth interfaces
+  enable_external_routing: false
+
+  # Default host interface for external routing
+  # Used when no specific interface is provided via Docker labels
+  default_external_interface: ""
+
+  # External network configuration (legacy/example settings)
+  external:
+    # Example external IP configuration
+    ip_address: ""
+    gateway: ""
+    host_interface: ""
+    # Deprecated: use enable_external_routing instead
+    enable_ip_forwarding: true
+
 # Logging configuration
 logging:
   # Log level: debug, info, warn, error

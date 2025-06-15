@@ -94,6 +94,16 @@ The following Docker labels are supported:
 - `ovs.gateway`: Gateway IP address
 - `ovs.mtu`: MTU for the interface
 - `ovs.mac_address`: MAC address for the interface
+- `ovs.vlan`: VLAN tag for the interface
+- `ovs.interface`: Interface name inside the container (defaults to "eth1")
+
+### External Routing Labels
+
+When external routing is enabled in configuration, the following labels set up static IP routing:
+
+- `ovs.external_ip`: External IP address for routing (e.g., "169.254.169.254/32")
+- `ovs.external_gateway`: Gateway for external routing (optional)
+- `ovs.external_interface`: Host interface for external routing (optional, uses default if not specified)
 
 ## Usage Examples
 
@@ -116,7 +126,29 @@ docker run -d \
   --label ovs.gateway=192.168.1.1 \
   --label ovs.mtu=1500 \
   --label ovs.mac_address=02:42:ac:11:00:02 \
+  --label ovs.vlan=100 \
   nginx:latest
+```
+
+### External Routing Configuration
+
+Run a container with external routing (requires external routing enabled in config):
+
+```bash
+docker run -d \
+  --label ovs.ip_address=192.168.1.100/24 \
+  --label ovs.external_ip=169.254.169.254/32 \
+  --label ovs.external_gateway=169.254.1.1 \
+  nginx:latest
+```
+
+This creates the equivalent of:
+```bash
+# IP assignment to host-side veth interface
+ip addr add 169.254.169.254/32 dev <container_id>_l
+
+# Route through host-side veth interface  
+ip route add 169.254.169.254/32 dev <container_id>_l
 ```
 
 ### Docker Compose Example
@@ -412,3 +444,89 @@ docker buildx build --platform linux/amd64,linux/arm64 -t ovs-port-manager .
 - `v*.*.*`: Specific version releases
 
 ## Local Installation
+
+## External Routing
+
+The OVS Port Manager supports external routing, which allows containers to have static IP addresses that are routable from the Docker host. This feature creates routes and IP assignments on host-side veth interfaces.
+
+### How External Routing Works
+
+When external routing is enabled and configured, the manager:
+
+1. **Assigns IP to Host Interface**: Adds the external IP to the host-side veth interface (`containerid_l`)
+2. **Creates Route**: Adds a route for the external IP through the host-side veth interface
+3. **Optional Gateway**: Optionally configures gateway routing if specified
+4. **Enables IP Forwarding**: Ensures IP forwarding is enabled on the host
+
+### Configuration
+
+External routing must be enabled in the configuration file:
+
+```yaml
+network:
+  # Enable external IP routing feature
+  enable_external_routing: true
+  
+  # Default host interface for external routing (optional)
+  default_external_interface: "eth0"
+```
+
+Or via environment variable:
+```bash
+export OVS_PORT_MANAGER_NETWORK_ENABLE_EXTERNAL_ROUTING=true
+```
+
+### Docker Labels for External Routing
+
+- `ovs.external_ip`: External IP address in CIDR format (required for external routing)
+- `ovs.external_gateway`: Gateway IP address (optional)
+- `ovs.external_interface`: Specific host interface to use (optional)
+
+### Example: External Routing
+
+```bash
+docker run -d \
+  --label ovs.ip_address=192.168.1.100/24 \
+  --label ovs.external_ip=169.254.169.254/32 \
+  --label ovs.external_gateway=169.254.1.1 \
+  nginx:latest
+```
+
+This configuration:
+- Creates internal OVS connectivity on `192.168.1.100/24`
+- Makes the container externally reachable at `169.254.169.254`
+- Routes traffic through the host-side veth interface
+
+### Generated Commands
+
+The external routing feature generates the equivalent of these commands:
+
+```bash
+# Container ID example: 1234567890ab
+CONTAINER_ID="1234567890ab"
+HOST_SIDE="${CONTAINER_ID}_l"
+
+# Add IP to host-side veth interface
+ip addr add 169.254.169.254/32 dev "${HOST_SIDE}"
+
+# Add route through host-side veth interface  
+ip route add 169.254.169.254/32 dev "${HOST_SIDE}"
+
+# Optional: Add gateway route if specified
+ip route add 169.254.169.254/32 via 169.254.1.1 dev "${HOST_SIDE}"
+```
+
+### Use Cases
+
+External routing is useful for:
+
+- **Static IP Services**: Containers that need consistent external IP addresses
+- **Load Balancer Backends**: Services that need to be reachable at specific IPs
+- **Migration Scenarios**: Moving services between hosts while maintaining IP addresses
+- **Multi-host Networking**: Coordinating IP addresses across multiple Docker hosts
+
+### Security Considerations
+
+- IP forwarding is enabled on the host when external routing is used
+- External IPs should be properly firewalled if not intended for public access
+- Consider network isolation between containers with external routing
