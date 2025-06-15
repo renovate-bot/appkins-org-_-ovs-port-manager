@@ -85,7 +85,11 @@ func TestGenerateDeterministicMAC(t *testing.T) {
 			}
 
 			if tt.checkFunc != nil && !tt.checkFunc(mac) {
-				t.Errorf("generateDeterministicMAC(%s) = %s, failed validation", tt.ipAddr, mac.String())
+				t.Errorf(
+					"generateDeterministicMAC(%s) = %s, failed validation",
+					tt.ipAddr,
+					mac.String(),
+				)
 			}
 		})
 	}
@@ -111,7 +115,12 @@ func TestGenerateDeterministicMACConsistency(t *testing.T) {
 			}
 
 			if mac1.String() != mac2.String() {
-				t.Errorf("MAC addresses not consistent for IP %s: %s != %s", ip, mac1.String(), mac2.String())
+				t.Errorf(
+					"MAC addresses not consistent for IP %s: %s != %s",
+					ip,
+					mac1.String(),
+					mac2.String(),
+				)
 			}
 		})
 	}

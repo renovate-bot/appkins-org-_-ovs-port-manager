@@ -111,7 +111,7 @@ func TestExtractOVSConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := m.extractOVSConfig(
-				tt.containerInfo.ContainerJSONBase.ID,
+				tt.containerInfo.ID,
 				tt.containerInfo.Config.Labels,
 			)
 

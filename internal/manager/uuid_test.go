@@ -8,9 +8,9 @@ import (
 
 func TestUUIDGeneration(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		prefix   string
+		name      string
+		input     string
+		prefix    string
 		checkFunc func(string) bool
 	}{
 		{
@@ -74,10 +74,15 @@ func TestUUIDGeneration(t *testing.T) {
 				if i == 8 || i == 13 || i == 18 || i == 23 {
 					continue // Skip hyphens
 				}
-				if !((char >= '0' && char <= '9') || 
-					 (char >= 'a' && char <= 'f') || 
-					 (char >= 'A' && char <= 'F')) {
-					t.Errorf("Invalid hex character '%c' at position %d in UUID %s", char, i, uuidStr)
+				if !((char >= '0' && char <= '9') ||
+					(char >= 'a' && char <= 'f') ||
+					(char >= 'A' && char <= 'F')) {
+					t.Errorf(
+						"Invalid hex character '%c' at position %d in UUID %s",
+						char,
+						i,
+						uuidStr,
+					)
 				}
 			}
 		})
@@ -100,7 +105,7 @@ func TestUUIDConsistency(t *testing.T) {
 			uuid3 := uuid.NewSHA1(ovsPortManagerNamespace, []byte(input))
 
 			if uuid1.String() != uuid2.String() || uuid2.String() != uuid3.String() {
-				t.Errorf("UUID generation not consistent for input %s: %s, %s, %s", 
+				t.Errorf("UUID generation not consistent for input %s: %s, %s, %s",
 					input, uuid1.String(), uuid2.String(), uuid3.String())
 			}
 		})
@@ -111,7 +116,7 @@ func TestUUIDUniqueness(t *testing.T) {
 	// Test that different inputs generate different UUIDs
 	testInputs := []string{
 		"interface:test1_l",
-		"interface:test2_l", 
+		"interface:test2_l",
 		"port:test1_l",
 		"port:test2_l",
 		"interface:different_l",
@@ -125,7 +130,7 @@ func TestUUIDUniqueness(t *testing.T) {
 		uuidStr := uuid.String()
 
 		if existingInput, exists := generatedUUIDs[uuidStr]; exists {
-			t.Errorf("UUID collision: inputs '%s' and '%s' both generated UUID %s", 
+			t.Errorf("UUID collision: inputs '%s' and '%s' both generated UUID %s",
 				input, existingInput, uuidStr)
 		}
 		generatedUUIDs[uuidStr] = input
@@ -135,7 +140,7 @@ func TestUUIDUniqueness(t *testing.T) {
 func TestUUIDNamespaceUsage(t *testing.T) {
 	// Test that our namespace UUID is valid and consistent
 	namespaceStr := ovsPortManagerNamespace.String()
-	
+
 	// Check that namespace is a valid UUID
 	parsedNS, err := uuid.Parse(namespaceStr)
 	if err != nil {
@@ -157,7 +162,7 @@ func TestUUIDNamespaceUsage(t *testing.T) {
 func TestUUIDPrefixHandling(t *testing.T) {
 	// Test different prefix patterns
 	baseName := "test123_l"
-	
+
 	tests := []struct {
 		prefix   string
 		expected string

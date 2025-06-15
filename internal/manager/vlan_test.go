@@ -93,7 +93,11 @@ func TestVLANValidation(t *testing.T) {
 			if !tt.expectValid && !parseError {
 				// For invalid cases, we need to check if the parsed value is in valid range
 				if vlanID >= 1 && vlanID <= 4094 {
-					t.Errorf("Expected invalid VLAN %s, but it parsed to valid ID %d", tt.vlanStr, vlanID)
+					t.Errorf(
+						"Expected invalid VLAN %s, but it parsed to valid ID %d",
+						tt.vlanStr,
+						vlanID,
+					)
 					return
 				}
 			}
@@ -119,12 +123,12 @@ func TestVLANStringFormatting(t *testing.T) {
 		input       string
 		expectValid bool
 	}{
-		{"Leading zeros", "0100", true},    // Should parse as 100
-		{"Whitespace", " 100 ", false},     // Spaces should be invalid
-		{"Plus sign", "+100", false},       // Plus sign should be invalid
-		{"Decimal", "100.0", false},        // Decimal should be invalid
-		{"Scientific", "1e2", false},       // Scientific notation should be invalid
-		{"Hex format", "0x64", false},      // Hex should be invalid
+		{"Leading zeros", "0100", true},       // Should parse as 100
+		{"Whitespace", " 100 ", false},        // Spaces should be invalid
+		{"Plus sign", "+100", false},          // Plus sign should be invalid
+		{"Decimal", "100.0", false},           // Decimal should be invalid
+		{"Scientific", "1e2", false},          // Scientific notation should be invalid
+		{"Hex format", "0x64", false},         // Hex should be invalid
 		{"Binary format", "0b1100100", false}, // Binary should be invalid
 	}
 
@@ -164,7 +168,7 @@ func TestVLANBoundaryConditions(t *testing.T) {
 			isValid := tt.vlanID >= 1 && tt.vlanID <= 4094
 
 			if isValid != tt.expectValid {
-				t.Errorf("VLAN %d validity = %v, want %v (%s)", 
+				t.Errorf("VLAN %d validity = %v, want %v (%s)",
 					tt.vlanID, isValid, tt.expectValid, tt.description)
 			}
 		})

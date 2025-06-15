@@ -50,7 +50,7 @@ func TestGeneratePortNameExtended(t *testing.T) {
 			// Verify the name with suffix doesn't exceed the limit
 			hostSide := result + "_l"
 			containerSide := result + "_c"
-			
+
 			if len(hostSide) > InterfaceNameLimit {
 				t.Errorf(
 					"Host side name %s length %d exceeds limit %d",
@@ -59,7 +59,7 @@ func TestGeneratePortNameExtended(t *testing.T) {
 					InterfaceNameLimit,
 				)
 			}
-			
+
 			if len(containerSide) > InterfaceNameLimit {
 				t.Errorf(
 					"Container side name %s length %d exceeds limit %d",
@@ -98,7 +98,10 @@ func TestPortNameLimits(t *testing.T) {
 		{"abc123", "6 characters"},
 		{"abc123def456", "exactly 12 characters"},
 		{"abc123def456789", "15 characters"},
-		{"1322aba3640c7f8a9b2e5d8f3c1a5b9e8d7c6f2a4b3e1d9c8f7a6b5e4d3c2a1b0", "full 64 character container ID"},
+		{
+			"1322aba3640c7f8a9b2e5d8f3c1a5b9e8d7c6f2a4b3e1d9c8f7a6b5e4d3c2a1b0",
+			"full 64 character container ID",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -112,7 +115,11 @@ func TestPortNameLimits(t *testing.T) {
 
 			// Check that port name is at most 12 characters
 			if len(portName) > 12 {
-				t.Errorf("Port name %s (%d chars) exceeds 12 character limit", portName, len(portName))
+				t.Errorf(
+					"Port name %s (%d chars) exceeds 12 character limit",
+					portName,
+					len(portName),
+				)
 			}
 
 			// Check that veth names don't exceed kernel limit
@@ -120,12 +127,12 @@ func TestPortNameLimits(t *testing.T) {
 			containerSide := portName + "_c"
 
 			if len(hostSide) > InterfaceNameLimit {
-				t.Errorf("Host side name %s (%d chars) exceeds kernel limit %d", 
+				t.Errorf("Host side name %s (%d chars) exceeds kernel limit %d",
 					hostSide, len(hostSide), InterfaceNameLimit)
 			}
 
 			if len(containerSide) > InterfaceNameLimit {
-				t.Errorf("Container side name %s (%d chars) exceeds kernel limit %d", 
+				t.Errorf("Container side name %s (%d chars) exceeds kernel limit %d",
 					containerSide, len(containerSide), InterfaceNameLimit)
 			}
 
@@ -133,7 +140,11 @@ func TestPortNameLimits(t *testing.T) {
 			if len(tc.containerID) >= len(portName) {
 				expectedPrefix := tc.containerID[:len(portName)]
 				if portName != expectedPrefix {
-					t.Errorf("Port name %s is not a prefix of container ID %s", portName, tc.containerID)
+					t.Errorf(
+						"Port name %s is not a prefix of container ID %s",
+						portName,
+						tc.containerID,
+					)
 				}
 			}
 		})
@@ -148,23 +159,33 @@ func TestInterfaceNameLimits(t *testing.T) {
 
 	// Test some known problematic cases
 	m := &Manager{}
-	
+
 	// Test the longest possible port name we might generate (12 chars + 2 char suffix)
 	longContainerID := "123456789012abcdefghijklmnop" // 27 chars, should be truncated to 12
 	portName := m.generatePortName(longContainerID)
-	
+
 	hostSide := portName + "_l"
 	containerSide := portName + "_c"
-	
+
 	// These should be exactly 14 characters ("123456789012_l", "123456789012_c")
 	expectedLength := 14
 	if len(hostSide) != expectedLength {
-		t.Errorf("Host side name %s length %d, expected %d", hostSide, len(hostSide), expectedLength)
+		t.Errorf(
+			"Host side name %s length %d, expected %d",
+			hostSide,
+			len(hostSide),
+			expectedLength,
+		)
 	}
 	if len(containerSide) != expectedLength {
-		t.Errorf("Container side name %s length %d, expected %d", containerSide, len(containerSide), expectedLength)
+		t.Errorf(
+			"Container side name %s length %d, expected %d",
+			containerSide,
+			len(containerSide),
+			expectedLength,
+		)
 	}
-	
+
 	// Both should be well under the 15 character kernel limit
 	if len(hostSide) > InterfaceNameLimit {
 		t.Errorf("Host side name %s exceeds kernel limit", hostSide)
