@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -55,6 +56,23 @@ type DockerConfig struct {
 	ConnectionTimeout time.Duration `mapstructure:"connection_timeout"`
 }
 
+// ExternalNetworkConfig contains settings for external IP forwarding.
+type ExternalNetworkConfig struct {
+	// External IP address for the container (e.g., "10.0.0.100/24")
+	IPAddress string `mapstructure:"ip_address"`
+
+	// External gateway for the container (e.g., "10.0.0.1")
+	Gateway string `mapstructure:"gateway"`
+
+	// Host interface to use for external connectivity (e.g., "eth0")
+	// This is the specific interface on the host for external traffic.
+	HostInterface string `mapstructure:"host_interface"`
+
+	// Enable IP forwarding on the host
+	// This is DEPRECATED. Use NetworkConfig.EnableExternalRouting instead.
+	EnableIPForwarding bool `mapstructure:"enable_ip_forwarding"`
+}
+
 // NetworkConfig contains network-specific configuration.
 type NetworkConfig struct {
 	// Default MTU for interfaces
@@ -65,6 +83,27 @@ type NetworkConfig struct {
 
 	// Network namespace handling
 	HandleNetNS bool `mapstructure:"handle_netns"`
+
+	// EnableExternalRouting globally enables or disables the external routing feature.
+	// If false, no external IP routing will be configured, regardless of Docker labels.
+	EnableExternalRouting bool `mapstructure:"enable_external_routing"`
+
+	// DefaultExternalInterface is the default host interface to use for external routing
+	// if no specific interface is provided via Docker labels. (e.g., "eth0")
+	DefaultExternalInterface string `mapstructure:"default_external_interface"`
+
+	// External network configuration for static IP forwarding
+	// This section might be deprecated or refactored if settings are moved up.
+	External ExternalNetworkConfig `mapstructure:"external"`
+}
+
+// GetHostInterfaceName returns the configured host interface name,
+// falling back to the default if the provided name is empty.
+func (nc *NetworkConfig) GetHostInterfaceName(configuredName string) string {
+	if configuredName != "" {
+		return configuredName
+	}
+	return nc.DefaultExternalInterface
 }
 
 // LoggingConfig contains logging configuration.
@@ -149,25 +188,34 @@ func setDefaults(v *viper.Viper) {
 		"docker.socket_path",
 		getEnvOrDefault("DOCKER_SOCKET_PATH", "/var/run/docker.sock"),
 	)
-	v.SetDefault("docker.api_version", "")
+	v.SetDefault("docker.api_version", "") // Let the client negotiate
 	v.SetDefault("docker.connection_timeout", 30*time.Second)
 
 	// Network defaults
 	v.SetDefault("network.default_mtu", 1500)
-	v.SetDefault("network.enable_ipv6", false)
-	v.SetDefault("network.handle_netns", true)
+	v.SetDefault("network.enable_ipv6", getEnvOrDefaultBool("ENABLE_IPV6", false))
+	v.SetDefault("network.handle_netns", getEnvOrDefaultBool("HANDLE_NETNS", true))
+	v.SetDefault("network.enable_external_routing", getEnvOrDefaultBool("ENABLE_EXTERNAL_ROUTING", false))
+	v.SetDefault("network.default_external_interface", getEnvOrDefault("DEFAULT_EXTERNAL_INTERFACE", ""))
+
+	// External Network defaults (under network.external)
+	// Note: network.external.enable_ip_forwarding is deprecated in favor of network.enable_external_routing
+	v.SetDefault("network.external.ip_address", getEnvOrDefault("EXTERNAL_IP_ADDRESS", ""))                           // Example, might not be used directly
+	v.SetDefault("network.external.gateway", getEnvOrDefault("EXTERNAL_GATEWAY", ""))                                 // Example
+	v.SetDefault("network.external.host_interface", getEnvOrDefault("EXTERNAL_HOST_INTERFACE", ""))                   // Example
+	v.SetDefault("network.external.enable_ip_forwarding", getEnvOrDefaultBool("EXTERNAL_ENABLE_IP_FORWARDING", true)) // Deprecated
 
 	// Logging defaults
-	v.SetDefault("logging.level", "info")
-	v.SetDefault("logging.format", "text")
-	v.SetDefault("logging.structured", false)
-	v.SetDefault("logging.file_path", "")
+	v.SetDefault("logging.level", getEnvOrDefault("LOG_LEVEL", "info"))
+	v.SetDefault("logging.format", getEnvOrDefault("LOG_FORMAT", "text"))
+	v.SetDefault("logging.structured", getEnvOrDefaultBool("LOG_STRUCTURED", false))
+	v.SetDefault("logging.file_path", getEnvOrDefault("LOG_FILE_PATH", ""))
 
 	// Server defaults
-	v.SetDefault("server.enable_metrics", false)
-	v.SetDefault("server.metrics_addr", ":8080")
-	v.SetDefault("server.enable_health_check", true)
-	v.SetDefault("server.health_addr", ":8081")
+	v.SetDefault("server.enable_metrics", getEnvOrDefaultBool("ENABLE_METRICS", false))
+	v.SetDefault("server.metrics_addr", getEnvOrDefault("METRICS_ADDR", ":8080"))
+	v.SetDefault("server.enable_health_check", getEnvOrDefaultBool("ENABLE_HEALTH_CHECK", true))
+	v.SetDefault("server.health_addr", getEnvOrDefault("HEALTH_ADDR", ":8081"))
 }
 
 // getEnvOrDefault gets an environment variable or returns a default value.
@@ -176,6 +224,27 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getEnvOrDefaultBool gets a boolean environment variable or returns a default value.
+// It interprets "true", "1", "yes" as true, and "false", "0", "no" as false (case-insensitive).
+func getEnvOrDefaultBool(key string, defaultValue bool) bool {
+	valueStr := strings.ToLower(os.Getenv(key))
+	if valueStr == "" {
+		return defaultValue
+	}
+	switch valueStr {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	default:
+		// Log a warning or return default if the value is ambiguous?
+		// For now, stick to viper's behavior which might be more nuanced or fallback.
+		// However, viper might not be used for these direct env lookups if we are setting defaults before viper reads envs.
+		// Let's be explicit for direct os.Getenv calls.
+		return defaultValue
+	}
 }
 
 // Validate validates the configuration.

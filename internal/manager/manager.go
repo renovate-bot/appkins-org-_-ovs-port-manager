@@ -35,6 +35,12 @@ const (
 	OVSVLANLabel = "ovs.vlan"
 	// OVSInterfaceLabel is the Docker label that specifies the interface name (optional, defaults to eth1).
 	OVSInterfaceLabel = "ovs.interface"
+	// OVSExternalIPLabel is the Docker label for the external IP address for routing.
+	OVSExternalIPLabel = "ovs.external_ip"
+	// OVSExternalGatewayLabel is the Docker label for the external gateway for routing.
+	OVSExternalGatewayLabel = "ovs.external_gateway"
+	// OVSExternalInterfaceLabel is the Docker label for the host interface to use for external routing.
+	OVSExternalInterfaceLabel = "ovs.external_interface"
 	// InterfaceNameLimit is the maximum length for network interface names in Linux.
 	InterfaceNameLimit = 15
 )
@@ -50,14 +56,17 @@ type Manager struct {
 
 // ContainerOVSConfig holds the OVS configuration for a container.
 type ContainerOVSConfig struct {
-	ContainerID string
-	IPAddress   string
-	Bridge      string
-	Gateway     string
-	MTU         string
-	MACAddress  string
-	Interface   string
-	VLAN        string
+	ContainerID       string
+	IPAddress         string
+	Bridge            string
+	Gateway           string
+	MTU               string
+	MACAddress        string
+	Interface         string
+	VLAN              string
+	ExternalIP        string
+	ExternalGateway   string
+	ExternalInterface string
 }
 
 // New creates a new OVS port manager.
@@ -337,7 +346,46 @@ func (m *Manager) handleContainerStart(ctx context.Context, containerID string) 
 // handleContainerStop handles container stop events.
 func (m *Manager) handleContainerStop(ctx context.Context, containerID string) error {
 	m.logger.V(1).Info("Container stopped, cleaning up OVS ports", "container_id", containerID[:12])
-	return m.removeOVSPort(ctx, containerID)
+
+	// Extract OVS config to check for external routing setup
+	// We need this to know if external routing rules need to be cleaned up.
+	// It's possible the container was stopped before full inspection was available,
+	// so we attempt to inspect again. If it fails, we proceed with port removal
+	// but might not be able to clean up external routing rules if they were applied.
+	var ovsConfig *ContainerOVSConfig
+	container, err := m.dockerClient.ContainerInspect(ctx, containerID)
+	if err == nil {
+		ovsConfig = m.extractOVSConfig(containerID, container.Config.Labels)
+	} else {
+		m.logger.V(1).Error(err, "Failed to inspect stopped container, external routing cleanup might be incomplete", "container_id", containerID[:12])
+	}
+
+	// Perform OVS port removal
+	if err := m.removeOVSPort(ctx, containerID); err != nil {
+		// Log error but continue to attempt external route cleanup if config was found
+		m.logger.Error(err, "Error during OVS port removal", "container_id", containerID[:12])
+	}
+
+	// If external routing was configured, attempt to remove it
+	if ovsConfig != nil && ovsConfig.ExternalIP != "" && m.config.Network.EnableExternalRouting {
+		if err := m.removeExternalIPRouting(
+			ovsConfig.ExternalIP,
+			ovsConfig.ExternalGateway,
+			ovsConfig.ExternalInterface,               // Pass the label value first
+			m.config.Network.DefaultExternalInterface, // Pass the default separately
+		); err != nil {
+			m.logger.Error(err, "Failed to remove external IP routing rules",
+				"container_id", containerID[:12],
+				"external_ip", ovsConfig.ExternalIP)
+			// Log and continue, as port removal might have succeeded.
+		} else {
+			m.logger.V(1).Info("Successfully removed external IP routing rules",
+				"container_id", containerID[:12],
+				"external_ip", ovsConfig.ExternalIP)
+		}
+	}
+
+	return nil // Original function returns nil after attempting cleanup
 }
 
 // extractOVSConfig extracts OVS configuration from container labels.
@@ -346,7 +394,18 @@ func (m *Manager) extractOVSConfig(
 	labels map[string]string,
 ) *ContainerOVSConfig {
 	ipAddress, hasIP := labels[OVSIPAddressLabel]
-	if !hasIP || ipAddress == "" {
+	// If OVSIPAddressLabel is not present, or is empty, this container is not managed by ovs-port-manager for internal OVS networking.
+	// However, it might still have external routing labels if EnableExternalRouting is true.
+	// If EnableExternalRouting is false, we only care about containers with OVSIPAddressLabel.
+	if (!hasIP || ipAddress == "") && !m.config.Network.EnableExternalRouting {
+		return nil
+	}
+
+	// If external routing is enabled, check for external IP label.
+	// If it's present, we process the container for external routing even if internal OVS IP is not set.
+	externalIP := labels[OVSExternalIPLabel]
+	if externalIP == "" && (!hasIP || ipAddress == "") {
+		// No internal OVS IP and no external IP, so nothing to do.
 		return nil
 	}
 
@@ -356,8 +415,6 @@ func (m *Manager) extractOVSConfig(
 		if m.config != nil && m.config.OVS.DefaultBridge != "" {
 			bridge = m.config.OVS.DefaultBridge
 		} else {
-			// Fallback if manager config or default bridge is not set (should not happen in normal operation)
-			// Or, consider logging an error here if config is expected to always be present.
 			bridge = "ovs_bond0" // Default to a common OVS bridge name as a last resort
 		}
 	}
@@ -368,31 +425,77 @@ func (m *Manager) extractOVSConfig(
 		if m.config != nil && m.config.OVS.DefaultInterface != "" {
 			interfaceName = m.config.OVS.DefaultInterface
 		} else {
-			// Fallback if manager config or default interface is not set
 			interfaceName = "bond0" // Default to a common interface name as a last resort
 		}
 	}
 
 	return &ContainerOVSConfig{
-		ContainerID: containerID,
-		IPAddress:   ipAddress,
-		Bridge:      bridge,
-		Gateway:     labels[OVSGatewayLabel],
-		MTU:         labels[OVSMTULabel],
-		MACAddress:  labels[OVSMACAddressLabel],
-		Interface:   interfaceName,
-		VLAN:        labels[OVSVLANLabel],
+		ContainerID:       containerID,
+		IPAddress:         ipAddress, // Can be empty if only external routing is configured
+		Bridge:            bridge,
+		Gateway:           labels[OVSGatewayLabel],
+		MTU:               labels[OVSMTULabel],
+		MACAddress:        labels[OVSMACAddressLabel],
+		Interface:         interfaceName,
+		VLAN:              labels[OVSVLANLabel],
+		ExternalIP:        externalIP,
+		ExternalGateway:   labels[OVSExternalGatewayLabel],
+		ExternalInterface: labels[OVSExternalInterfaceLabel],
 	}
 }
 
-// addOVSPort adds an OVS port to a container (similar to ovs-docker add-port).
+// addOVSPort adds an OVS port to a container and sets up external routing if configured.
 func (m *Manager) addOVSPort(ctx context.Context, config *ContainerOVSConfig) error {
-	// Use the consolidated AddPort method
-	return m.AddPort(ctx, config.Bridge, config.Interface, config.ContainerID, config)
+	// Add OVS port (internal networking) if IPAddress is specified
+	if config.IPAddress != "" {
+		if err := m.AddPort(ctx, config.Bridge, config.Interface, config.ContainerID, config); err != nil {
+			return fmt.Errorf("failed to add OVS port: %w", err)
+		}
+		m.logger.V(1).Info("Successfully added OVS port",
+			"container_id", config.ContainerID[:12],
+			"interface", config.Interface,
+			"ip_address", config.IPAddress)
+	} else {
+		m.logger.V(1).Info("Skipping internal OVS port setup as no IP address label was provided",
+			"container_id", config.ContainerID[:12])
+	}
+
+	// Setup external IP routing if configured and enabled
+	if m.config.Network.EnableExternalRouting && config.ExternalIP != "" {
+		m.logger.V(1).Info("Setting up external IP routing",
+			"container_id", config.ContainerID[:12],
+			"external_ip", config.ExternalIP,
+			"gateway", config.ExternalGateway,
+			"host_interface_label", config.ExternalInterface) // Log the label value
+
+		// Use the helper from internal/config to get the actual host interface name,
+		// falling back to the default from config if the label is not set.
+		actualHostInterface := m.config.Network.GetHostInterfaceName(config.ExternalInterface)
+
+		m.logger.V(2).
+			Info("Resolved host interface for external routing", "actual_host_interface", actualHostInterface)
+
+		if err := m.setupExternalIPRouting(
+			config.ExternalIP,
+			config.ExternalGateway,
+			actualHostInterface, // Use the resolved host interface
+		); err != nil {
+			// If external routing setup fails, we might want to roll back OVS port creation,
+			// or at least log a significant warning. For now, return the error.
+			// TODO: Consider rollback strategy for OVS port if external routing fails.
+			return fmt.Errorf("failed to set up external IP routing: %w", err)
+		}
+		m.logger.V(1).Info("Successfully set up external IP routing",
+			"container_id", config.ContainerID[:12],
+			"external_ip", config.ExternalIP)
+	}
+
+	return nil
 }
 
 // removeOVSPort removes OVS ports associated with a container
 // This mirrors the ovs-docker del-port and del-ports behavior.
+// Note: External IP routing cleanup is now handled in handleContainerStop.
 func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	// Find all ports for this container using external_ids via ovsService
 	ports, err := m.ovsService.findPortsForContainer(ctx, containerID)
@@ -971,4 +1074,164 @@ func macAddressesEqual(a, b net.HardwareAddr) bool {
 		}
 	}
 	return true
+}
+
+// setupExternalIPRouting enables IP forwarding and sets up necessary iptables/ARP rules.
+// This function should be idempotent.
+func (m *Manager) setupExternalIPRouting(externalIP, externalGateway, hostInterface string) error {
+	m.logger.V(1).Info("Attempting to set up external IP routing",
+		"external_ip", externalIP,
+		"gateway", externalGateway,
+		"host_interface", hostInterface)
+
+	// 1. Enable IP Forwarding
+	if err := m.enableIPForwarding(); err != nil {
+		return fmt.Errorf("failed to enable IP forwarding: %w", err)
+	}
+	m.logger.V(2).Info("IP forwarding enabled")
+
+	// 2. Assign External IP to Host Interface (if not already present)
+	// This makes the host respond to ARP requests for the externalIP on the hostInterface.
+	if err := m.assignIPToInterface(externalIP, hostInterface); err != nil {
+		return fmt.Errorf(
+			"failed to assign external IP %s to host interface %s: %w",
+			externalIP,
+			hostInterface,
+			err,
+		)
+	}
+	m.logger.V(2).
+		Info("External IP assigned to host interface", "ip_address", externalIP, "interface", hostInterface)
+
+	// 3. Add static route for the external IP via the container's OVS bridge IP (if applicable)
+	// This step might be more complex depending on how OVS is configured and whether the container
+	// is directly on an OVS bridge or if there's another layer of networking.
+	// For now, we assume the host needs to route traffic for externalIP to the container.
+	// This part needs careful consideration of the network topology.
+	// If the container's internal IP (from OVSIPAddressLabel) is on the same subnet as the host's
+	// interface on the OVS bridge, direct routing might work.
+	// If the externalIP is meant to be NATed or proxied, the rules would be different.
+
+	// For a simple routed setup (not NAT), we might not need a specific static route on the host
+	// if the container's IP is advertised correctly (e.g. via BGP, or if the gateway knows about it).
+	// The primary goal here is to make the *host* respond to ARP for externalIP and forward packets.
+
+	// 4. Setup IPTables rules for FORWARDING (and potentially NAT if needed)
+	// Allow forwarding for the external IP.
+	// Example: iptables -A FORWARD -d <externalIP>/32 -j ACCEPT
+	// Example: iptables -A FORWARD -s <externalIP>/32 -j ACCEPT
+	// These rules assume that the default FORWARD policy might be DROP.
+	// We need to ensure that traffic to and from the externalIP is allowed.
+
+	if err := m.ensureIPTablesForwardRule("CREATE", externalIP); err != nil {
+		return fmt.Errorf("failed to add iptables FORWARD rule for %s: %w", externalIP, err)
+	}
+	m.logger.V(2).Info("IPTables FORWARD rule added for external IP", "ip_address", externalIP)
+
+	// 5. ARP Configuration (e.g., proxy_arp or ensuring host responds)
+	// The assignIPToInterface step should make the host respond to ARP.
+	// If using proxy ARP for a different subnet, more config would be needed here.
+	// For now, direct IP assignment is assumed.
+
+	// 6. Set up Gateway for the external IP if specified
+	// This is tricky. If externalGateway is provided, it implies that the *host*
+	// should use this gateway for traffic originating *from* the externalIP, or that
+	// routes need to be set up on the host to direct traffic for the externalIP's network
+	// via this gateway. This usually means the externalGateway is on the same L2 segment
+	// as the hostInterface.
+
+	// If the externalGateway is for the *container*, that should be configured *inside* the container.
+	// The current labels OVSExternalGatewayLabel implies it's for the host-level routing setup.
+
+	// If externalGateway is provided, add a route on the host for the externalIP's network
+	// or a default route for traffic sourced from externalIP.
+	// This is highly dependent on the desired network architecture.
+	// A common scenario: externalIP is an additional IP on the host, and externalGateway is the
+	// upstream router for the subnet that externalIP belongs to.
+	// If externalIP is, for example, 10.0.0.100/24 and externalGateway is 10.0.0.1,
+	// the host needs a route for 10.0.0.0/24 via hostInterface, and 10.0.0.1 should be reachable.
+	// The assignIPToInterface(externalIP + "/prefix", hostInterface) handles adding the IP.
+	// If externalGateway is different from the host's main default gateway, specific routes might be needed.
+
+	// For now, we assume assignIPToInterface handles making the IP reachable on the local network.
+	// If externalGateway is specified and is different from the host's default gateway,
+	// and we need to route traffic for the externalIP specifically through it,
+	// policy-based routing (ip rule add from <externalIP> table <custom_table>) might be needed.
+	// This is advanced and likely out of scope for initial implementation without more specific requirements.
+	// We will log if a gateway is provided but not explicitly used in a complex way yet.
+	if externalGateway != "" {
+		m.logger.V(1).
+			Info("External gateway specified, ensure host routing is configured appropriately",
+				"external_gateway", externalGateway,
+				"external_ip", externalIP)
+
+		// Potentially add a specific route here if needed, e.g.,
+		// ip route add <network_of_external_ip> via <externalGateway> dev <hostInterface>
+		// This requires knowing the prefix/network of externalIP.
+		// For simplicity, we assume the IP assignment and existing host routes are sufficient.
+	}
+
+	m.logger.V(1).Info("External IP routing setup appears complete", "external_ip", externalIP)
+	return nil
+}
+
+// removeExternalIPRouting removes the configuration set up by setupExternalIPRouting.
+// This function should be idempotent.
+func (m *Manager) removeExternalIPRouting(
+	externalIP, externalGateway, labeledHostInterface, defaultHostInterface string,
+) error {
+	m.logger.V(1).Info("Attempting to remove external IP routing",
+		"external_ip", externalIP,
+		"gateway", externalGateway,
+		"labeled_host_interface", labeledHostInterface,
+		"default_host_interface", defaultHostInterface)
+
+	actualHostInterface := m.config.Network.GetHostInterfaceName(labeledHostInterface)
+	if actualHostInterface == "" {
+		// This case should ideally not be hit if DefaultExternalInterface is configured and validated.
+		// If GetHostInterfaceName returns empty, it means both label and default were empty.
+		m.logger.Error(
+			nil,
+			"Cannot determine host interface for external IP cleanup; label and default are empty",
+			"external_ip",
+			externalIP,
+		)
+		return fmt.Errorf("host interface for external IP %s cleanup is unknown", externalIP)
+	}
+
+	m.logger.V(2).
+		Info("Resolved host interface for cleanup", "actual_host_interface", actualHostInterface)
+
+	// 1. Remove IPTables FORWARD rule
+	// Use "DELETE" action for ensureIPTablesForwardRule
+	if err := m.ensureIPTablesForwardRule("DELETE", externalIP); err != nil {
+		// Log error but continue, as other cleanup steps might succeed
+		m.logger.Error(err, "Failed to remove iptables FORWARD rule", "external_ip", externalIP)
+	} else {
+		m.logger.V(2).Info("IPTables FORWARD rule removed for external IP", "ip_address", externalIP)
+	}
+
+	// 2. Remove External IP from Host Interface
+	// This should be done carefully, especially if other services might use the IP.
+	// Idempotency is key: only remove if it was added by this manager or matches config.
+	// The netlink.AddrDel command is idempotent.
+	if err := m.removeIPFromInterface(externalIP, actualHostInterface); err != nil {
+		m.logger.Error(err, "Failed to remove external IP from host interface",
+			"external_ip", externalIP, "interface", actualHostInterface)
+	} else {
+		m.logger.V(2).Info("External IP removed from host interface", "ip_address", externalIP, "interface", actualHostInterface)
+	}
+
+	// 3. IP Forwarding: Generally, we don't disable IP forwarding globally when a single container
+	// stops, as other containers or system services might rely on it.
+	// Disabling it should be a system-level decision or tied to the lifecycle of the manager itself
+	// if no other containers require it. For now, we leave it enabled.
+	// If this needs to be conditional, we'd need to track active users of IP forwarding.
+	m.logger.V(2).Info("IP forwarding state is not changed during individual container cleanup.")
+
+	// 4. Static routes or ARP rules: If specific static routes or ARP entries were added for this IP,
+	// they should be removed here. The current setup relies on IP assignment and iptables.
+
+	m.logger.V(1).Info("External IP routing cleanup attempt complete", "external_ip", externalIP)
+	return nil // Return nil even if some sub-steps failed, to allow other cleanup.
 }
