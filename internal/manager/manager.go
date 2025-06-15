@@ -1142,7 +1142,7 @@ func (m *Manager) addPortToOVSBridge(
 		m.logger.V(2).Info("Using existing interface", "interface", portName, "uuid", interfaceUUID)
 	} else {
 		// Create new Interface record with deterministic UUID
-		interfaceUUID = "uuid"
+		interfaceUUID = "iface"
 		iface := &models.Interface{
 			UUID:        interfaceUUID,
 			Name:        portName,
@@ -1189,7 +1189,7 @@ func (m *Manager) addPortToOVSBridge(
 		m.logger.V(2).Info("Using existing port", "port", portName, "uuid", portUUID)
 	} else {
 		// Create new Port record with deterministic UUID
-		portUUID = "uuid"
+		portUUID = "ovsport"
 		port := &models.Port{
 			UUID:        portUUID,
 			Name:        portName,
