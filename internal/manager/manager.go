@@ -506,6 +506,17 @@ func (m *Manager) setLinkUp(interfaceName string) error {
 func (m *Manager) moveLinkToNetns(interfaceName, containerID string) error {
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
+		// Debug: List available interfaces to help diagnose the issue
+		if links, listErr := netlink.LinkList(); listErr == nil {
+			interfaceNames := make([]string, len(links))
+			for i, l := range links {
+				interfaceNames[i] = l.Attrs().Name
+			}
+			m.logger.V(1).Info("Available interfaces when looking for missing link",
+				"missing_interface", interfaceName,
+				"container_id", containerID[:12],
+				"available_interfaces", strings.Join(interfaceNames, ", "))
+		}
 		return fmt.Errorf("failed to find link %s: %v", interfaceName, err)
 	}
 
@@ -742,13 +753,13 @@ func (m *Manager) deleteLinkByName(interfaceName string) error {
 }
 
 // createVethPairWithNames creates a veth pair with specific names.
-func (m *Manager) createVethPairWithNames(hostName, containerName string) error {
+func (m *Manager) createVethPairWithNames(hostSide, containerSide string) error {
 	// Create veth pair
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
-			Name: hostName,
+			Name: hostSide,
 		},
-		PeerName: containerName,
+		PeerName: containerSide,
 	}
 
 	if err := netlink.LinkAdd(veth); err != nil {
@@ -756,15 +767,33 @@ func (m *Manager) createVethPairWithNames(hostName, containerName string) error 
 			return fmt.Errorf("failed to create veth pair: %v", err)
 		}
 		m.logger.V(3).Info("Not creating veth pair, already exists",
-			"host_side", hostName,
-			"container_side", containerName,
+			"host_side", hostSide,
+			"container_side", containerSide,
 		)
 	} else {
 		m.logger.V(3).Info("Created veth pair",
-			"host_side", hostName,
-			"container_side", containerName,
+			"host_side", hostSide,
+			"container_side", containerSide,
 		)
 	}
+
+	// Verify both interfaces exist after creation
+	if _, err := netlink.LinkByName(hostSide); err != nil {
+		return fmt.Errorf("host side interface %s not found after creation: %v", hostSide, err)
+	}
+
+	if _, err := netlink.LinkByName(containerSide); err != nil {
+		return fmt.Errorf(
+			"container side interface %s not found after creation: %v",
+			containerSide,
+			err,
+		)
+	}
+
+	m.logger.V(3).Info("Verified both veth interfaces exist",
+		"host_side", hostSide,
+		"container_side", containerSide,
+	)
 
 	return nil
 }
@@ -1008,12 +1037,17 @@ func (m *Manager) AddPort(
 	bridge, interfaceName, containerID string,
 	opts *ContainerOVSConfig,
 ) error {
-	// Check if port already exists
+	// Check if port already exists in OVS
 	existingPort, err := m.getPortForContainerInterface(ctx, containerID, interfaceName)
 	if err != nil {
 		return fmt.Errorf("failed to check existing port: %v", err)
 	}
 	if existingPort != "" {
+		m.logger.V(2).Info("Port already exists in OVS",
+			"container_id", containerID[:12],
+			"interface", interfaceName,
+			"existing_port", existingPort,
+		)
 		return fmt.Errorf(
 			"port already attached for container %s and interface %s",
 			containerID[:12],
@@ -1031,10 +1065,30 @@ func (m *Manager) AddPort(
 	hostSide := portID + "_l"
 	containerSide := portID + "_c"
 
+	// Check if veth interfaces already exist and clean them up if needed
+	if existingLink, err := netlink.LinkByName(hostSide); err == nil {
+		m.logger.V(2).Info("Host side veth already exists, deleting before recreating",
+			"interface", hostSide, "container_id", containerID[:12])
+		if err := netlink.LinkDel(existingLink); err != nil {
+			m.logger.V(1).Info("Failed to delete existing host side veth", "error", err)
+		}
+	}
+
+	if existingLink, err := netlink.LinkByName(containerSide); err == nil {
+		m.logger.V(2).Info("Container side veth already exists, deleting before recreating",
+			"interface", containerSide, "container_id", containerID[:12])
+		if err := netlink.LinkDel(existingLink); err != nil {
+			m.logger.V(1).Info("Failed to delete existing container side veth", "error", err)
+		}
+	}
+
 	// Create veth pair
 	if err := m.createVethPairWithNames(hostSide, containerSide); err != nil {
 		return fmt.Errorf("failed to create veth pair: %v", err)
 	}
+
+	// Small delay to ensure veth pair is fully created before moving
+	time.Sleep(time.Millisecond * 100)
 
 	// Add host side to OVS bridge with external IDs
 	externalIDs := map[string]string{
