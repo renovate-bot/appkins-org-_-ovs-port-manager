@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -669,7 +670,7 @@ func (m *Manager) configureInterfaceInCurrentNs(
 
 		// Re-get the link with new name, with retry for timing issues
 		var retryErr error
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			if link, retryErr = netlink.LinkByName(newName); retryErr == nil {
 				break
 			}
@@ -863,13 +864,14 @@ func (m *Manager) deleteLinkByName(interfaceName string) error {
 }
 
 // createVethPairWithNames creates a veth pair with specific names.
-func (m *Manager) createVethPairWithNames(hostSide, containerSide string) error {
+func (m *Manager) createVethPairWithNames(hostSide, containerSide string, fd int) error {
 	// Create veth pair
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
 			Name: hostSide,
 		},
-		PeerName: containerSide,
+		PeerName:      containerSide,
+		PeerNamespace: netlink.NsFd(fd),
 	}
 
 	if err := netlink.LinkAdd(veth); err != nil {
@@ -928,12 +930,7 @@ func (m *Manager) removePortFromOVSBridgeCommand(portName string) error {
 	// Find which bridge contains this port
 	var bridges []models.Bridge
 	err = m.ovs.WhereCache(func(b *models.Bridge) bool {
-		for _, portUUID := range b.Ports {
-			if portUUID == port.UUID {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(b.Ports, port.UUID)
 	}).List(ctx, &bridges)
 	if err != nil {
 		return fmt.Errorf("failed to find bridge containing port %s: %v", portName, err)
@@ -1556,8 +1553,13 @@ func (m *Manager) createAndConfigurePort(
 		}
 	}
 
+	fd, _, err := m.getContainerFd(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("failed to get container netns fd: %v", err)
+	}
+
 	// Create veth pair
-	if err := m.createVethPairWithNames(hostSide, containerSide); err != nil {
+	if err := m.createVethPairWithNames(hostSide, containerSide, fd); err != nil {
 		return fmt.Errorf("failed to create veth pair: %v", err)
 	}
 
