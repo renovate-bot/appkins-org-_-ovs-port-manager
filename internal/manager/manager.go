@@ -1115,27 +1115,25 @@ func (m *Manager) addPortToOVSBridge(
 	// Build transaction operations
 	operations := []ovsdb.Operation{}
 
-	// rootUUID, err := m.getRootUUID()
-	// if err != nil {
-	// 	return fmt.Errorf("failed to get root UUID: %v", err)
-	// }
+	brUUID, err := m.getBridgeUUID()
+	if err != nil {
+		return fmt.Errorf("failed to get root UUID: %v", err)
+	}
 
-	// // Create mutation to add bridge to Open_vSwitch table
-	// ovsRow := models.OpenvSwitch{
-	// 	UUID: rootUUID,
-	// }
+	// Create mutation to add bridge to Open_vSwitch table
+	ovsRow := models.Bridge{UUID: brUUID}
 
-	// mutateOps, err := m.ovsClient.Where(&ovsRow).Mutate(&ovsRow, model.Mutation{
-	// 	Field:   &ovsRow.ExternalIDs,
-	// 	Mutator: "insert",
-	// 	Value:   iface.ExternalIDs,
-	// })
-	// if err != nil {
-	// 	return fmt.Errorf("failed to create bridge mutation: %v", err)
-	// }
+	mutateOps, err := m.ovsClient.Where(&ovsRow).Mutate(&ovsRow, model.Mutation{
+		Field:   &ovsRow.Ports,
+		Mutator: "insert",
+		Value:   []string{port.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create bridge mutation: %v", err)
+	}
 
-	// // Combine operations
-	// operations = append(operations, mutateOps...)
+	// Combine operations
+	operations = append(operations, mutateOps...)
 
 	// Create interface operation
 	interfaceOps, err := m.ovsClient.Create(iface)
@@ -1709,6 +1707,19 @@ func macAddressesEqual(a, b net.HardwareAddr) bool {
 		}
 	}
 	return true
+}
+
+// getRootUUID retrieves the root UUID from the Open_vSwitch table.
+func (m *Manager) getBridgeUUID() (string, error) {
+	var brUUID string
+	for uuid := range m.ovsClient.Cache().Table("Bridge").Rows() {
+		brUUID = uuid
+		break // Take the first (and typically only) UUID
+	}
+	if brUUID == "" {
+		return "", fmt.Errorf("no Open_vSwitch root UUID found")
+	}
+	return brUUID, nil
 }
 
 // getRootUUID retrieves the root UUID from the Open_vSwitch table.
