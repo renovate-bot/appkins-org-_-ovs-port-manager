@@ -260,6 +260,7 @@ func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 }
 
 // processExistingContainers processes all running containers that have OVS labels.
+// This method implements idempotent behavior - it will create missing ports and verify existing ones.
 func (m *Manager) processExistingContainers(ctx context.Context) error {
 	containers, err := m.dockerClient.ContainerList(ctx, container.ListOptions{
 		All: false, // Only running containers
@@ -268,24 +269,45 @@ func (m *Manager) processExistingContainers(ctx context.Context) error {
 		return fmt.Errorf("failed to list containers: %v", err)
 	}
 
+	m.logger.V(1).Info("Processing existing containers for OVS configuration",
+		"total_containers", len(containers))
+
+	var processedCount, errorCount int
 	for _, container := range containers {
 		config := m.extractOVSConfig(container.ID, container.Labels)
-		if config != nil {
-			m.logger.V(1).Info("Processing existing container",
-				"container_id", config.ContainerID[:12],
-				"ip_address", config.IPAddress,
-				"bridge", config.Bridge)
+		if config == nil {
+			continue // Container doesn't have OVS labels
+		}
 
-			if err := m.addOVSPort(ctx, config); err != nil {
-				m.logger.Error(
-					err,
-					"Failed to add OVS port for existing container",
-					"container_id",
-					config.ContainerID[:12],
-				)
-			}
+		processedCount++
+		m.logger.V(1).Info("Processing existing container",
+			"container_id", config.ContainerID[:12],
+			"ip_address", config.IPAddress,
+			"bridge", config.Bridge)
+
+		// Use the same AddPort method which now includes idempotency checks
+		if err := m.addOVSPort(ctx, config); err != nil {
+			errorCount++
+			m.logger.Error(
+				err,
+				"Failed to configure OVS port for existing container",
+				"container_id",
+				config.ContainerID[:12],
+				"interface", config.Interface,
+			)
+			// Continue processing other containers even if one fails
+		} else {
+			m.logger.V(2).Info("Successfully configured OVS port for existing container",
+				"container_id", config.ContainerID[:12],
+				"interface", config.Interface)
 		}
 	}
+
+	successRate := float64(processedCount-errorCount) / float64(max(1, processedCount)) * 100
+	m.logger.V(1).Info("Completed processing existing containers",
+		"processed", processedCount,
+		"errors", errorCount,
+		"success_rate", fmt.Sprintf("%.1f%%", successRate))
 
 	return nil
 }
@@ -302,7 +324,7 @@ func (m *Manager) handleContainerEvent(ctx context.Context, event events.Message
 	}
 }
 
-// handleContainerStart handles container start events.
+// handleContainerStart handles container start events with restart detection.
 func (m *Manager) handleContainerStart(ctx context.Context, containerID string) error {
 	// Get container details
 	container, err := m.dockerClient.ContainerInspect(ctx, containerID)
@@ -316,10 +338,26 @@ func (m *Manager) handleContainerStart(ctx context.Context, containerID string) 
 		return nil
 	}
 
-	m.logger.V(1).Info("Container started with OVS configuration",
-		"container_id", containerID[:12],
-		"ip_address", config.IPAddress,
-		"bridge", config.Bridge)
+	// Check if this is a restart by looking for existing ports
+	existingPorts, err := m.findPortsForContainer(ctx, containerID)
+	if err != nil {
+		m.logger.V(1).
+			Error(err, "Failed to check for existing ports", "container_id", containerID[:12])
+	}
+
+	if len(existingPorts) > 0 {
+		m.logger.V(1).Info("Container restart detected, verifying port configuration",
+			"container_id", containerID[:12],
+			"existing_ports", len(existingPorts))
+
+		// For restart, we use the AddPort method which now includes idempotency checks
+		// It will verify existing configuration and only recreate if needed
+	} else {
+		m.logger.V(1).Info("Container started with OVS configuration",
+			"container_id", containerID[:12],
+			"ip_address", config.IPAddress,
+			"bridge", config.Bridge)
+	}
 
 	return m.addOVSPort(ctx, config)
 }
@@ -372,7 +410,6 @@ func (m *Manager) addOVSPort(ctx context.Context, config *ContainerOVSConfig) er
 // This mirrors the ovs-docker del-port and del-ports behavior.
 func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	// Find all ports for this container using external_ids
-	// This mirrors: ovs-vsctl --data=bare --no-heading --columns=name find interface external_ids:container_id="$CONTAINER"
 	ports, err := m.findPortsForContainer(ctx, containerID)
 	if err != nil {
 		return fmt.Errorf("failed to find ports for container: %v", err)
@@ -384,17 +421,16 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	}
 
 	for _, portName := range ports {
-		m.logger.V(1).Info("Removing OVS port (ovs-docker method)",
+		m.logger.V(1).Info("Removing OVS port",
 			"container_id", containerID[:12],
 			"port_name", portName)
 
-		// Remove port from OVS (mirroring: ovs-vsctl --if-exists del-port "$PORT")
+		// Remove port from OVS
 		if err := m.removePortFromOVSBridgeCommand(portName); err != nil {
 			m.logger.Error(err, "Failed to remove port from OVS", "port_name", portName)
 		}
 
-		// Delete the veth pair (mirroring: ip link delete "$PORT")
-		// This will delete both sides of the veth pair
+		// Delete the veth pair
 		if err := m.deleteLinkByName(portName); err != nil {
 			m.logger.Error(err, "Failed to delete veth pair", "port_name", portName)
 		}
@@ -404,6 +440,7 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	return nil
 }
 
+// getContainerSandboxKey gets the sandbox key for a container's network namespace.
 func (m *Manager) getContainerSandboxKey(
 	ctx context.Context,
 	containerID string,
@@ -425,7 +462,6 @@ func (m *Manager) getContainerSandboxKey(
 }
 
 // getContainerFd gets a file descriptor for the container's network namespace with proper cleanup.
-// Returns fd, cleanup function, and error.
 func (m *Manager) getContainerFd(
 	ctx context.Context,
 	containerID string,
@@ -452,7 +488,6 @@ func (m *Manager) getContainerFd(
 }
 
 // getContainerNetNS gets a network namespace handle for the container with proper cleanup.
-// Returns namespace handle, cleanup function, and error.
 func (m *Manager) getContainerNetNS(
 	ctx context.Context,
 	containerID string,
@@ -467,9 +502,7 @@ func (m *Manager) getContainerNetNS(
 
 // generatePortName generates a unique port name for a container.
 func (m *Manager) generatePortName(containerID string) string {
-	// Use first 12 characters of container ID as the port name, or the full ID if shorter
-	// This provides exact matching for container operations and stays under the 15-char limit
-	// Format: 1322aba3640c (12 chars) + _c (2 chars) = 14 chars total (under 15 limit)
+	// Use first 12 characters of container ID as the port name
 	var portName string
 	if len(containerID) >= 12 {
 		portName = containerID[:12]
@@ -541,7 +574,6 @@ func (m *Manager) moveLinkToNetns(interfaceName, containerID string) error {
 }
 
 // configureInterfaceInCurrentNs configures an interface in the current network namespace.
-// This function assumes it's already running in the target namespace.
 func (m *Manager) configureInterfaceInCurrentNs(
 	oldName, newName, ipAddr, macAddr, mtu, gateway string,
 ) error {
@@ -627,18 +659,6 @@ func (m *Manager) configureInterfaceInCurrentNs(
 			return fmt.Errorf("invalid gateway IP %s", gateway)
 		}
 
-		// If we have an IP address, verify the gateway is in a reachable network
-		if ipAddr != "" {
-			// Parse the assigned IP address to check if gateway is reachable
-			if addr, err := netlink.ParseAddr(ipAddr); err == nil && addr.IPNet != nil {
-				if !addr.Contains(gw) {
-					m.logger.V(1).Info("Gateway is not in the same subnet as the assigned IP",
-						"gateway", gateway, "ip", ipAddr, "interface", newName)
-					// Continue anyway - the user might know what they're doing
-				}
-			}
-		}
-
 		// Create default route (0.0.0.0/0 for IPv4, ::/0 for IPv6)
 		var dst *net.IPNet
 		if gw.To4() != nil {
@@ -684,7 +704,6 @@ func (m *Manager) configureInterfaceInCurrentNs(
 }
 
 // configureInterfaceInContainer configures an interface inside a container using Docker ID.
-// This uses optimized file descriptor access via Docker SandboxKey.
 func (m *Manager) configureInterfaceInContainer(
 	ctx context.Context,
 	containerID, oldName, newName, ipAddr, macAddr, mtu, gateway string,
@@ -790,16 +809,10 @@ func (m *Manager) createVethPairWithNames(hostSide, containerSide string) error 
 		)
 	}
 
-	m.logger.V(3).Info("Verified both veth interfaces exist",
-		"host_side", hostSide,
-		"container_side", containerSide,
-	)
-
 	return nil
 }
 
-// removePortFromOVSBridgeCommand removes a port from OVS bridge
-// This mirrors: ovs-vsctl --if-exists del-port "$PORT".
+// removePortFromOVSBridgeCommand removes a port from OVS bridge.
 func (m *Manager) removePortFromOVSBridgeCommand(portName string) error {
 	// Find and delete the port
 	var ports []models.Port
@@ -831,10 +844,9 @@ func (m *Manager) removePortFromOVSBridgeCommand(portName string) error {
 	return nil
 }
 
-// findPortsForContainer finds all OVS ports associated with a container
-// This mirrors: ovs-vsctl --data=bare --no-heading --columns=name find interface external_ids:container_id="$CONTAINER".
+// findPortsForContainer finds all OVS ports associated with a container.
 func (m *Manager) findPortsForContainer(ctx context.Context, containerID string) ([]string, error) {
-	// Find interfaces by container_id external_id (this is how ovs-docker works)
+	// Find interfaces by container_id external_id
 	var interfaces []models.Interface
 	err := m.ovsClient.WhereCache(func(i *models.Interface) bool {
 		containerIDValue, exists := i.ExternalIDs["container_id"]
@@ -859,8 +871,7 @@ func (m *Manager) findPortsForContainer(ctx context.Context, containerID string)
 	return portNames, nil
 }
 
-// getPortForContainerInterface finds a port for a container interface
-// This mirrors the get_port_for_container_interface function from ovs-docker.
+// getPortForContainerInterface finds a port for a container interface.
 func (m *Manager) getPortForContainerInterface(
 	ctx context.Context,
 	containerID, interfaceName string,
@@ -883,16 +894,13 @@ func (m *Manager) getPortForContainerInterface(
 	return interfaces[0].Name, nil
 }
 
-// ensureBridgeExists ensures the bridge exists, creating it if necessary
-// This mirrors: ovs-vsctl br-exists "$BRIDGE" || ovs-vsctl add-br "$BRIDGE".
+// ensureBridgeExists ensures the bridge exists, creating it if necessary.
 func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) error {
 	// Check if bridge exists
 	var bridges []models.Bridge
-
-	err := m.ovsClient.List(ctx, &bridges)
-	// err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
-	// 	return b.Name == bridgeName
-	// }).List(ctx, &bridges)
+	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
+		return b.Name == bridgeName
+	}).List(ctx, &bridges)
 	if err != nil {
 		return fmt.Errorf("failed to check if bridge exists: %v", err)
 	}
@@ -950,8 +958,7 @@ func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) err
 	return nil
 }
 
-// addPortToOVSBridge adds a port to an OVS bridge with optional external IDs
-// This mirrors: ovs-vsctl --may-exist add-port "$BRIDGE" "$PORT".
+// addPortToOVSBridge adds a port to an OVS bridge with external IDs.
 func (m *Manager) addPortToOVSBridge(
 	ctx context.Context,
 	bridgeName, portName string,
@@ -1028,43 +1035,201 @@ func (m *Manager) addPortToOVSBridge(
 	return nil
 }
 
-// Core ovs-docker functionality methods
-
-// AddPort implements ovs-docker add-port functionality
-// Mirrors: ovs-docker add-port BRIDGE INTERFACE CONTAINER [options].
-func (m *Manager) AddPort(
+// isPortFullyConfigured checks if an existing port is fully configured with the expected settings.
+func (m *Manager) isPortFullyConfigured(
 	ctx context.Context,
-	bridge, interfaceName, containerID string,
+	containerID, interfaceName string,
+	opts *ContainerOVSConfig,
+) (bool, error) {
+	// Check if the container interface exists and has the expected configuration
+	containerNs, containerCleanup, err := m.getContainerNetNS(ctx, containerID)
+	if err != nil {
+		return false, fmt.Errorf("failed to get container netns: %v", err)
+	}
+	defer containerCleanup()
+
+	// Get current (host) namespace
+	hostNs, err := netns.Get()
+	if err != nil {
+		return false, fmt.Errorf("failed to get host netns: %v", err)
+	}
+	defer func() {
+		if err := hostNs.Close(); err != nil {
+			m.logger.V(1).Info("Failed to close host namespace", "error", err)
+		}
+	}()
+
+	// Switch to container namespace
+	if err := netns.Set(containerNs); err != nil {
+		return false, fmt.Errorf("failed to switch to container netns: %v", err)
+	}
+
+	// Ensure we switch back to host namespace
+	defer func() {
+		if err := netns.Set(hostNs); err != nil {
+			m.logger.V(3).Error(err, "Failed to switch back to host namespace")
+		}
+	}()
+
+	// Check if the target interface exists in the container
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		// Interface doesn't exist in container
+		return false, nil
+	}
+
+	// Check if interface is up
+	if link.Attrs().Flags&net.FlagUp == 0 {
+		return false, nil
+	}
+
+	// Check IP address if specified
+	if opts.IPAddress != "" {
+		addrs, err := netlink.AddrList(link, 0) // 0 for all families
+		if err != nil {
+			return false, fmt.Errorf("failed to list addresses: %v", err)
+		}
+
+		expectedAddr, err := netlink.ParseAddr(opts.IPAddress)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse expected IP: %v", err)
+		}
+
+		hasExpectedIP := false
+		for _, addr := range addrs {
+			if addr.IP.Equal(expectedAddr.IP) && addr.Mask.String() == expectedAddr.Mask.String() {
+				hasExpectedIP = true
+				break
+			}
+		}
+		if !hasExpectedIP {
+			return false, nil
+		}
+	}
+
+	// Check MAC address if specified
+	if opts.MACAddress != "" {
+		expectedMAC, err := net.ParseMAC(opts.MACAddress)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse expected MAC: %v", err)
+		}
+		if !macAddressesEqual(link.Attrs().HardwareAddr, expectedMAC) {
+			return false, nil
+		}
+	}
+
+	// Check MTU if specified
+	if opts.MTU != "" {
+		expectedMTU, err := strconv.Atoi(opts.MTU)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse expected MTU: %v", err)
+		}
+		if link.Attrs().MTU != expectedMTU {
+			return false, nil
+		}
+	}
+
+	// Check default route if gateway is specified
+	if opts.Gateway != "" {
+		routes, err := netlink.RouteList(link, 0) // 0 for all families
+		if err != nil {
+			return false, fmt.Errorf("failed to list routes: %v", err)
+		}
+
+		expectedGW := net.ParseIP(opts.Gateway)
+		if expectedGW == nil {
+			return false, fmt.Errorf("invalid gateway IP: %s", opts.Gateway)
+		}
+
+		hasDefaultRoute := false
+		for _, route := range routes {
+			// Check for default route (0.0.0.0/0 or ::/0)
+			if route.Dst == nil ||
+				(route.Dst.IP.IsUnspecified() &&
+					((route.Dst.IP.To4() != nil && route.Dst.Mask.String() == "00000000") ||
+						(route.Dst.IP.To4() == nil && route.Dst.Mask.String() == "00000000000000000000000000000000"))) {
+				if route.Gw != nil && route.Gw.Equal(expectedGW) {
+					hasDefaultRoute = true
+					break
+				}
+			}
+		}
+		if !hasDefaultRoute {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// cleanupExistingPort removes an existing port and its associated network interfaces.
+func (m *Manager) cleanupExistingPort(portName, containerID string) error {
+	m.logger.V(2).Info("Cleaning up existing port",
+		"port", portName,
+		"container_id", containerID[:12])
+
+	// Remove port from OVS bridge
+	if err := m.removePortFromOVSBridgeCommand(portName); err != nil {
+		m.logger.V(1).
+			Error(err, "Failed to remove port from OVS bridge during cleanup", "port", portName)
+	}
+
+	// Delete the veth pair (this will delete both sides)
+	if err := m.deleteLinkByName(portName); err != nil {
+		m.logger.V(1).Error(err, "Failed to delete veth pair during cleanup", "port", portName)
+	}
+
+	return nil
+}
+
+// ensurePortStateConsistent ensures that the port state is consistent between
+// OVS database and kernel network interfaces.
+func (m *Manager) ensurePortStateConsistent(
+	ctx context.Context,
+	portName, containerID string,
+) error {
+	// Check if port exists in OVS
+	var ports []models.Port
+	err := m.ovsClient.WhereCache(func(p *models.Port) bool {
+		return p.Name == portName
+	}).List(ctx, &ports)
+	if err != nil {
+		return fmt.Errorf("failed to check OVS port: %v", err)
+	}
+
+	ovsPortExists := len(ports) > 0
+
+	// Check if host-side interface exists
+	_, hostInterfaceErr := netlink.LinkByName(portName)
+	hostInterfaceExists := hostInterfaceErr == nil
+
+	// If OVS port exists but host interface doesn't, clean up OVS
+	if ovsPortExists && !hostInterfaceExists {
+		m.logger.V(1).Info("OVS port exists but host interface missing, cleaning up OVS",
+			"port", portName, "container_id", containerID[:12])
+		if err := m.removePortFromOVSBridgeCommand(portName); err != nil {
+			return fmt.Errorf("failed to cleanup orphaned OVS port: %v", err)
+		}
+	}
+
+	// If host interface exists but OVS port doesn't, clean up interface
+	if !ovsPortExists && hostInterfaceExists {
+		m.logger.V(1).Info("Host interface exists but OVS port missing, cleaning up interface",
+			"port", portName, "container_id", containerID[:12])
+		if err := m.deleteLinkByName(portName); err != nil {
+			return fmt.Errorf("failed to cleanup orphaned interface: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// createAndConfigurePort handles the atomic creation and configuration of a port.
+func (m *Manager) createAndConfigurePort(
+	ctx context.Context,
+	bridge, hostSide, containerSide, containerID, interfaceName string,
 	opts *ContainerOVSConfig,
 ) error {
-	// Check if port already exists in OVS
-	existingPort, err := m.getPortForContainerInterface(ctx, containerID, interfaceName)
-	if err != nil {
-		return fmt.Errorf("failed to check existing port: %v", err)
-	}
-	if existingPort != "" {
-		m.logger.V(2).Info("Port already exists in OVS",
-			"container_id", containerID[:12],
-			"interface", interfaceName,
-			"existing_port", existingPort,
-		)
-		return fmt.Errorf(
-			"port already attached for container %s and interface %s",
-			containerID[:12],
-			interfaceName,
-		)
-	}
-
-	// Ensure bridge exists
-	if err := m.ensureBridgeExists(ctx, bridge); err != nil {
-		return fmt.Errorf("failed to ensure bridge exists: %v", err)
-	}
-
-	// Generate port names
-	portID := m.generatePortName(containerID)
-	hostSide := portID + "_l"
-	containerSide := portID + "_c"
-
 	// Check if veth interfaces already exist and clean them up if needed
 	if existingLink, err := netlink.LinkByName(hostSide); err == nil {
 		m.logger.V(2).Info("Host side veth already exists, deleting before recreating",
@@ -1096,24 +1261,26 @@ func (m *Manager) AddPort(
 		"container_iface": interfaceName,
 	}
 	if err := m.addPortToOVSBridge(ctx, bridge, hostSide, externalIDs); err != nil {
-		if err := m.deleteLinkByName(hostSide); err != nil {
-			m.logger.V(1).Info("Failed to delete link during cleanup", "error", err)
+		if delErr := m.deleteLinkByName(hostSide); delErr != nil {
+			m.logger.V(1).Info("Failed to delete link during cleanup", "error", delErr)
 		}
 		return fmt.Errorf("failed to add port to bridge: %v", err)
 	}
 
 	// Set host side up
 	if err := m.setLinkUp(hostSide); err != nil {
-		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
-			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)
+		if delErr := m.removePortFromOVSBridgeCommand(hostSide); delErr != nil {
+			m.logger.V(1).
+				Info("Failed to remove port from OVS bridge during cleanup", "error", delErr)
 		}
 		return fmt.Errorf("failed to set host side up: %v", err)
 	}
 
 	// Move container side to container namespace and configure
 	if err := m.moveLinkToNetns(containerSide, containerID); err != nil {
-		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
-			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)
+		if delErr := m.removePortFromOVSBridgeCommand(hostSide); delErr != nil {
+			m.logger.V(1).
+				Info("Failed to remove port from OVS bridge during cleanup", "error", delErr)
 		}
 		return fmt.Errorf("failed to move link to container: %v", err)
 	}
@@ -1121,8 +1288,9 @@ func (m *Manager) AddPort(
 	// Configure interface in container (IP, MAC, MTU, Gateway)
 	if err := m.configureInterfaceInContainer(ctx, containerID, containerSide, interfaceName,
 		opts.IPAddress, opts.MACAddress, opts.MTU, opts.Gateway); err != nil {
-		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
-			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)
+		if delErr := m.removePortFromOVSBridgeCommand(hostSide); delErr != nil {
+			m.logger.V(1).
+				Info("Failed to remove port from OVS bridge during cleanup", "error", delErr)
 		}
 		return fmt.Errorf("failed to configure interface in container: %v", err)
 	}
@@ -1134,86 +1302,10 @@ func (m *Manager) AddPort(
 		}
 	}
 
-	m.logger.Info("Successfully added OVS port",
-		"container_id", containerID[:12],
-		"bridge", bridge,
-		"interface", interfaceName,
-		"host_port", hostSide,
-	)
-
 	return nil
 }
 
-// DelPort implements ovs-docker del-port functionality
-// Mirrors: ovs-docker del-port BRIDGE INTERFACE CONTAINER.
-func (m *Manager) DelPort(ctx context.Context, bridge, interfaceName, containerID string) error {
-	port, err := m.getPortForContainerInterface(ctx, containerID, interfaceName)
-	if err != nil {
-		return fmt.Errorf("failed to find port: %v", err)
-	}
-	if port == "" {
-		return fmt.Errorf(
-			"no port found for container %s and interface %s",
-			containerID[:12],
-			interfaceName,
-		)
-	}
-
-	// Remove from OVS bridge
-	if err := m.removePortFromOVSBridgeCommand(port); err != nil {
-		return fmt.Errorf("failed to remove port from bridge: %v", err)
-	}
-
-	// Delete the link
-	if err := m.deleteLinkByName(port); err != nil {
-		return fmt.Errorf("failed to delete link: %v", err)
-	}
-
-	m.logger.Info("Successfully removed OVS port",
-		"container_id", containerID[:12],
-		"interface", interfaceName,
-		"port", port,
-	)
-
-	return nil
-}
-
-// DelPorts implements ovs-docker del-ports functionality
-// Mirrors: ovs-docker del-ports BRIDGE CONTAINER.
-func (m *Manager) DelPorts(ctx context.Context, bridge, containerID string) error {
-	ports, err := m.findPortsForContainer(ctx, containerID)
-	if err != nil {
-		return fmt.Errorf("failed to find ports for container: %v", err)
-	}
-
-	if len(ports) == 0 {
-		m.logger.V(1).Info("No ports found for container", "container_id", containerID[:12])
-		return nil
-	}
-
-	for _, port := range ports {
-		// Remove from OVS bridge
-		if err := m.removePortFromOVSBridgeCommand(port); err != nil {
-			m.logger.Error(err, "Failed to remove port from bridge, continuing", "port", port)
-			continue
-		}
-
-		// Delete the link
-		if err := m.deleteLinkByName(port); err != nil {
-			m.logger.Error(err, "Failed to delete link, continuing", "port", port)
-		}
-	}
-
-	m.logger.Info("Successfully removed all OVS ports",
-		"container_id", containerID[:12],
-		"port_count", len(ports),
-	)
-
-	return nil
-}
-
-// SetVLAN implements ovs-docker set-vlan functionality
-// Mirrors: ovs-docker set-vlan BRIDGE INTERFACE CONTAINER VLAN.
+// SetVLAN implements ovs-docker set-vlan functionality.
 func (m *Manager) SetVLAN(
 	ctx context.Context,
 	bridge, interfaceName, containerID, vlan string,
@@ -1283,4 +1375,187 @@ func (m *Manager) setVLAN(
 	)
 
 	return nil
+}
+
+// AddPort implements ovs-docker add-port functionality with idempotency and retry logic.
+func (m *Manager) AddPort(
+	ctx context.Context,
+	bridge, interfaceName, containerID string,
+	opts *ContainerOVSConfig,
+) error {
+	// Check if port already exists in OVS and is fully configured
+	existingPort, err := m.getPortForContainerInterface(ctx, containerID, interfaceName)
+	if err != nil {
+		return fmt.Errorf("failed to check existing port: %v", err)
+	}
+	if existingPort != "" {
+		// Check if the existing port is properly configured
+		if configured, err := m.isPortFullyConfigured(ctx, containerID, interfaceName, opts); err != nil {
+			m.logger.V(1).Error(err,
+				"Failed to check if existing port is configured, will recreate",
+				"container_id", containerID[:12],
+				"interface", interfaceName,
+				"existing_port", existingPort)
+			// Remove the incompletely configured port and recreate
+			if cleanupErr := m.cleanupExistingPort(existingPort, containerID); cleanupErr != nil {
+				m.logger.V(1).
+					Error(cleanupErr, "Failed to cleanup existing port", "port", existingPort)
+			}
+		} else if configured {
+			m.logger.V(1).Info("Port already exists and is properly configured, skipping",
+				"container_id", containerID[:12],
+				"interface", interfaceName,
+				"existing_port", existingPort)
+			return nil // Idempotent - port is already properly configured
+		} else {
+			m.logger.V(1).Info("Port exists but is not fully configured, recreating",
+				"container_id", containerID[:12],
+				"interface", interfaceName,
+				"existing_port", existingPort)
+			// Remove the incompletely configured port and recreate
+			if cleanupErr := m.cleanupExistingPort(existingPort, containerID); cleanupErr != nil {
+				m.logger.V(1).Error(cleanupErr, "Failed to cleanup existing port", "port", existingPort)
+			}
+		}
+	}
+
+	// Ensure bridge exists
+	if err := m.ensureBridgeExists(ctx, bridge); err != nil {
+		return fmt.Errorf("failed to ensure bridge exists: %v", err)
+	}
+
+	// Generate port names
+	portID := m.generatePortName(containerID)
+	hostSide := portID + "_l"
+	containerSide := portID + "_c"
+
+	// Ensure port state is consistent before proceeding
+	if err := m.ensurePortStateConsistent(ctx, hostSide, containerID); err != nil {
+		m.logger.V(1).Error(err, "Failed to ensure consistent port state, continuing",
+			"port", hostSide, "container_id", containerID[:12])
+	}
+
+	// Retry logic for veth creation and configuration
+	const maxRetries = 3
+	const retryDelay = time.Millisecond * 200
+
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if err := m.createAndConfigurePort(ctx, bridge, hostSide, containerSide,
+			containerID, interfaceName, opts); err != nil {
+			lastErr = err
+			m.logger.V(1).Info("Port creation attempt failed, retrying",
+				"attempt", attempt,
+				"max_retries", maxRetries,
+				"container_id", containerID[:12],
+				"error", err)
+
+			// Clean up any partial state before retrying
+			if cleanupErr := m.cleanupExistingPort(hostSide, containerID); cleanupErr != nil {
+				m.logger.V(1).Error(cleanupErr, "Failed to cleanup after failed attempt",
+					"attempt", attempt)
+			}
+
+			if attempt < maxRetries {
+				time.Sleep(retryDelay * time.Duration(attempt)) // Exponential backoff
+			}
+			continue
+		}
+
+		// Success!
+		lastErr = nil
+		break
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("failed to create port after %d attempts: %v", maxRetries, lastErr)
+	}
+
+	m.logger.Info("Successfully added OVS port",
+		"container_id", containerID[:12],
+		"bridge", bridge,
+		"interface", interfaceName,
+		"host_port", hostSide,
+	)
+
+	return nil
+}
+
+// DelPort implements ovs-docker del-port functionality.
+func (m *Manager) DelPort(ctx context.Context, bridge, interfaceName, containerID string) error {
+	port, err := m.getPortForContainerInterface(ctx, containerID, interfaceName)
+	if err != nil {
+		return fmt.Errorf("failed to find port: %v", err)
+	}
+	if port == "" {
+		return fmt.Errorf(
+			"no port found for container %s and interface %s",
+			containerID[:12],
+			interfaceName,
+		)
+	}
+
+	// Remove from OVS bridge
+	if err := m.removePortFromOVSBridgeCommand(port); err != nil {
+		return fmt.Errorf("failed to remove port from bridge: %v", err)
+	}
+
+	// Delete the link
+	if err := m.deleteLinkByName(port); err != nil {
+		return fmt.Errorf("failed to delete link: %v", err)
+	}
+
+	m.logger.Info("Successfully removed OVS port",
+		"container_id", containerID[:12],
+		"interface", interfaceName,
+		"port", port,
+	)
+
+	return nil
+}
+
+// DelPorts implements ovs-docker del-ports functionality.
+func (m *Manager) DelPorts(ctx context.Context, bridge, containerID string) error {
+	ports, err := m.findPortsForContainer(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("failed to find ports for container: %v", err)
+	}
+
+	if len(ports) == 0 {
+		m.logger.V(1).Info("No ports found for container", "container_id", containerID[:12])
+		return nil
+	}
+
+	for _, port := range ports {
+		// Remove from OVS bridge
+		if err := m.removePortFromOVSBridgeCommand(port); err != nil {
+			m.logger.Error(err, "Failed to remove port from bridge, continuing", "port", port)
+			continue
+		}
+
+		// Delete the link
+		if err := m.deleteLinkByName(port); err != nil {
+			m.logger.Error(err, "Failed to delete link, continuing", "port", port)
+		}
+	}
+
+	m.logger.Info("Successfully removed all OVS ports",
+		"container_id", containerID[:12],
+		"port_count", len(ports),
+	)
+
+	return nil
+}
+
+// macAddressesEqual compares two MAC addresses for equality.
+func macAddressesEqual(a, b net.HardwareAddr) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
