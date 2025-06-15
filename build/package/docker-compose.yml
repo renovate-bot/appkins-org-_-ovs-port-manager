@@ -1,6 +1,38 @@
 version: "3.8"
 
 services:
+  portmanager:
+    container_name: portmanager
+    deploy: { replicas: 1 }
+    environment:
+      OVS_DB: a593d0f6-d02a-4268-8a88-b57196f42160
+      OVS_DEFAULT_BRIDGE: ovs_bond0
+      OVS_DEFAULT_INTERFACE: bond0
+    image: ghcr.io/appkins-org/ovs-port-manager:latest
+    network_mode: host
+    pid: host
+    privileged: true
+    security_opt:
+      - systempaths=unconfined
+      - seccomp=unconfined
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+      - type: bind
+        source: /var/run/docker.pid
+        target: /var/run/docker.pid
+        read_only: true
+      - type: bind
+        source: /var/run/openvswitch/db.sock
+        target: /var/run/openvswitch/db.sock
+        read_only: true
+      - type: bind
+        source: /var/run/docker/netns
+        target: /var/run/docker/netns
+        read_only: true
+
   ovs-port-manager:
     build:
       context: ../..

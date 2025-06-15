@@ -1075,7 +1075,7 @@ func macAddressesEqual(a, b net.HardwareAddr) bool {
 	return true
 }
 
-// setupExternalIPRouting sets up external IP routing by creating routes and assigning IPs 
+// setupExternalIPRouting sets up external IP routing by creating routes and assigning IPs
 // to the host-side veth interface. This enables external routing to static IPs.
 // This function should be idempotent.
 func (m *Manager) setupExternalIPRouting(externalIP, externalGateway, containerID string) error {
@@ -1093,20 +1093,20 @@ func (m *Manager) setupExternalIPRouting(externalIP, externalGateway, containerI
 	portName := m.generatePortName(containerID)
 	hostSide := portName + "_l"
 
-	// 3. Add IP address to host-side veth interface 
+	// 3. Add IP address to host-side veth interface
 	// This makes the external IP routable through the veth pair
 	if err := m.assignIPToInterface(externalIP, hostSide); err != nil {
-		return fmt.Errorf("failed to assign external IP %s to host interface %s: %w", 
+		return fmt.Errorf("failed to assign external IP %s to host interface %s: %w",
 			externalIP, hostSide, err)
 	}
-	m.logger.V(2).Info("External IP assigned to host-side veth interface", 
+	m.logger.V(2).Info("External IP assigned to host-side veth interface",
 		"ip_address", externalIP, "interface", hostSide)
 
 	// 4. Add specific route for the external IP through the host-side veth interface
 	if err := m.addExternalRoute(externalIP, hostSide); err != nil {
 		// Try to clean up the IP assignment if route addition fails
 		if cleanupErr := m.removeIPFromInterface(externalIP, hostSide); cleanupErr != nil {
-			m.logger.V(1).Info("Failed to cleanup IP assignment after route failure", 
+			m.logger.V(1).Info("Failed to cleanup IP assignment after route failure",
 				"error", cleanupErr, "ip", externalIP, "interface", hostSide)
 		}
 		return fmt.Errorf("failed to add external route for %s: %w", externalIP, err)
@@ -1116,16 +1116,16 @@ func (m *Manager) setupExternalIPRouting(externalIP, externalGateway, containerI
 	// 5. Add gateway route if specified
 	if externalGateway != "" {
 		if err := m.addExternalGatewayRoute(externalIP, externalGateway, hostSide); err != nil {
-			m.logger.V(1).Info("Failed to add gateway route, continuing", 
+			m.logger.V(1).Info("Failed to add gateway route, continuing",
 				"error", err, "gateway", externalGateway)
 			// Don't fail the entire operation for gateway route issues
 		} else {
-			m.logger.V(2).Info("External gateway route added", 
+			m.logger.V(2).Info("External gateway route added",
 				"gateway", externalGateway, "interface", hostSide)
 		}
 	}
 
-	m.logger.V(1).Info("External IP routing setup complete", 
+	m.logger.V(1).Info("External IP routing setup complete",
 		"external_ip", externalIP, "interface", hostSide)
 	return nil
 }
@@ -1144,37 +1144,37 @@ func (m *Manager) removeExternalIPRouting(externalIP, externalGateway, container
 
 	// 1. Remove external route
 	if err := m.removeExternalRoute(externalIP, hostSide); err != nil {
-		m.logger.V(1).Info("Failed to remove external route", 
+		m.logger.V(1).Info("Failed to remove external route",
 			"error", err, "ip", externalIP, "interface", hostSide)
 		// Continue with cleanup even if route removal fails
 	} else {
-		m.logger.V(2).Info("External route removed", 
+		m.logger.V(2).Info("External route removed",
 			"ip_address", externalIP, "interface", hostSide)
 	}
 
 	// 2. Remove gateway route if it was configured
 	if externalGateway != "" {
 		if err := m.removeExternalGatewayRoute(externalIP, externalGateway, hostSide); err != nil {
-			m.logger.V(1).Info("Failed to remove gateway route", 
+			m.logger.V(1).Info("Failed to remove gateway route",
 				"error", err, "gateway", externalGateway)
 			// Continue with cleanup
 		} else {
-			m.logger.V(2).Info("External gateway route removed", 
+			m.logger.V(2).Info("External gateway route removed",
 				"gateway", externalGateway, "interface", hostSide)
 		}
 	}
 
 	// 3. Remove IP assignment from host-side veth interface
 	if err := m.removeIPFromInterface(externalIP, hostSide); err != nil {
-		m.logger.V(1).Info("Failed to remove IP from host interface", 
+		m.logger.V(1).Info("Failed to remove IP from host interface",
 			"error", err, "ip", externalIP, "interface", hostSide)
 		// Continue even if IP removal fails
 	} else {
-		m.logger.V(2).Info("External IP removed from host-side veth interface", 
+		m.logger.V(2).Info("External IP removed from host-side veth interface",
 			"ip_address", externalIP, "interface", hostSide)
 	}
 
-	m.logger.V(1).Info("External IP routing cleanup complete", 
+	m.logger.V(1).Info("External IP routing cleanup complete",
 		"external_ip", externalIP, "interface", hostSide)
 	return nil // Return nil even if some sub-steps failed, to allow other cleanup
 }

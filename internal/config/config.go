@@ -195,15 +195,33 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("network.default_mtu", 1500)
 	v.SetDefault("network.enable_ipv6", getEnvOrDefaultBool("ENABLE_IPV6", false))
 	v.SetDefault("network.handle_netns", getEnvOrDefaultBool("HANDLE_NETNS", true))
-	v.SetDefault("network.enable_external_routing", getEnvOrDefaultBool("ENABLE_EXTERNAL_ROUTING", false))
-	v.SetDefault("network.default_external_interface", getEnvOrDefault("DEFAULT_EXTERNAL_INTERFACE", ""))
+	v.SetDefault(
+		"network.enable_external_routing",
+		getEnvOrDefaultBool("ENABLE_EXTERNAL_ROUTING", false),
+	)
+	v.SetDefault(
+		"network.default_external_interface",
+		getEnvOrDefault("DEFAULT_EXTERNAL_INTERFACE", ""),
+	)
 
 	// External Network defaults (under network.external)
 	// Note: network.external.enable_ip_forwarding is deprecated in favor of network.enable_external_routing
-	v.SetDefault("network.external.ip_address", getEnvOrDefault("EXTERNAL_IP_ADDRESS", ""))                           // Example, might not be used directly
-	v.SetDefault("network.external.gateway", getEnvOrDefault("EXTERNAL_GATEWAY", ""))                                 // Example
-	v.SetDefault("network.external.host_interface", getEnvOrDefault("EXTERNAL_HOST_INTERFACE", ""))                   // Example
-	v.SetDefault("network.external.enable_ip_forwarding", getEnvOrDefaultBool("EXTERNAL_ENABLE_IP_FORWARDING", true)) // Deprecated
+	v.SetDefault(
+		"network.external.ip_address",
+		getEnvOrDefault("EXTERNAL_IP_ADDRESS", ""),
+	) // Example, might not be used directly
+	v.SetDefault(
+		"network.external.gateway",
+		getEnvOrDefault("EXTERNAL_GATEWAY", ""),
+	) // Example
+	v.SetDefault(
+		"network.external.host_interface",
+		getEnvOrDefault("EXTERNAL_HOST_INTERFACE", ""),
+	) // Example
+	v.SetDefault(
+		"network.external.enable_ip_forwarding",
+		getEnvOrDefaultBool("EXTERNAL_ENABLE_IP_FORWARDING", true),
+	) // Deprecated
 
 	// Logging defaults
 	v.SetDefault("logging.level", getEnvOrDefault("LOG_LEVEL", "info"))

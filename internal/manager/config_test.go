@@ -3,6 +3,7 @@ package manager
 import (
 	"testing"
 
+	"github.com/appkins-org/ovs-port-manager/internal/config"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/go-logr/logr"
@@ -12,6 +13,15 @@ func TestExtractOVSConfig(t *testing.T) {
 	// Create a manager for testing
 	m := &Manager{
 		logger: logr.Discard(),
+		config: &config.Config{
+			OVS: config.OVSConfig{
+				DefaultBridge:    "ovs_bond0",
+				DefaultInterface: "bond0",
+			},
+			Network: config.NetworkConfig{
+				EnableExternalRouting: false, // Default to false for these tests
+			},
+		},
 	}
 
 	tests := []struct {

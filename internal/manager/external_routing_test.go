@@ -11,7 +11,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// MockNetlinkHandle is a mock implementation of netlink operations for testing
+// MockNetlinkHandle is a mock implementation of netlink operations for testing.
 type MockNetlinkHandle struct {
 	links     map[string]*netlink.Dummy // Use dummy interfaces for testing
 	addresses map[string][]netlink.Addr
@@ -46,7 +46,7 @@ func (m *MockNetlinkHandle) GetRoutes() []netlink.Route {
 	return m.routes
 }
 
-// TestExternalRoutingSetup tests the external routing setup functionality
+// TestExternalRoutingSetup tests the external routing setup functionality.
 func TestExternalRoutingSetup(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -117,7 +117,7 @@ func TestExternalRoutingSetup(t *testing.T) {
 	}
 }
 
-// TestExternalRoutingCleanup tests the external routing cleanup functionality
+// TestExternalRoutingCleanup tests the external routing cleanup functionality.
 func TestExternalRoutingCleanup(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -163,7 +163,7 @@ func TestExternalRoutingCleanup(t *testing.T) {
 	}
 }
 
-// TestAddExternalRoute tests the addExternalRoute function
+// TestAddExternalRoute tests the addExternalRoute function.
 func TestAddExternalRoute(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -218,7 +218,7 @@ func TestAddExternalRoute(t *testing.T) {
 	}
 }
 
-// TestRemoveExternalRoute tests the removeExternalRoute function
+// TestRemoveExternalRoute tests the removeExternalRoute function.
 func TestRemoveExternalRoute(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -257,7 +257,7 @@ func TestRemoveExternalRoute(t *testing.T) {
 	}
 }
 
-// TestPortNameGeneration tests that the port name generation works correctly
+// TestPortNameGeneration tests that the port name generation works correctly.
 func TestPortNameGeneration(t *testing.T) {
 	logger := logr.Discard()
 	manager := &Manager{
@@ -303,7 +303,7 @@ func TestPortNameGeneration(t *testing.T) {
 	}
 }
 
-// TestExternalIPParsing tests IP address parsing for external routing
+// TestExternalIPParsing tests IP address parsing for external routing.
 func TestExternalIPParsing(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -377,7 +377,7 @@ func TestExternalIPParsing(t *testing.T) {
 	}
 }
 
-// TestContainerOVSConfigExternalFields tests the external routing fields in ContainerOVSConfig
+// TestContainerOVSConfigExternalFields tests the external routing fields in ContainerOVSConfig.
 func TestContainerOVSConfigExternalFields(t *testing.T) {
 	config := &ContainerOVSConfig{
 		ContainerID:       "1234567890ab",
@@ -398,7 +398,7 @@ func TestContainerOVSConfigExternalFields(t *testing.T) {
 		"External IP should be different from internal IP")
 }
 
-// BenchmarkExternalRouting benchmarks the external routing operations
+// BenchmarkExternalRouting benchmarks the external routing operations.
 func BenchmarkExternalRouting(b *testing.B) {
 	logger := logr.Discard()
 	manager := &Manager{
