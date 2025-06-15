@@ -679,13 +679,19 @@ func (m *Manager) createVethPairWithNames(hostName, containerName string) error 
 	}
 
 	if err := netlink.LinkAdd(veth); err != nil {
-		return fmt.Errorf("failed to create veth pair: %v", err)
+		if !strings.Contains(err.Error(), "file exists") {
+			return fmt.Errorf("failed to create veth pair: %v", err)
+		}
+		m.logger.V(3).Info("Not creating veth pair, already exists",
+			"host_side", hostName,
+			"container_side", containerName,
+		)
+	} else {
+		m.logger.V(3).Info("Created veth pair",
+			"host_side", hostName,
+			"container_side", containerName,
+		)
 	}
-
-	m.logger.V(3).Info("Created veth pair",
-		"host_side", hostName,
-		"container_side", containerName,
-	)
 
 	return nil
 }
