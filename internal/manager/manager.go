@@ -1115,26 +1115,6 @@ func (m *Manager) addPortToOVSBridge(
 	// Build transaction operations
 	operations := []ovsdb.Operation{}
 
-	brUUID, err := m.getBridgeUUID()
-	if err != nil {
-		return fmt.Errorf("failed to get root UUID: %v", err)
-	}
-
-	// Create mutation to add bridge to Open_vSwitch table
-	ovsRow := models.Bridge{UUID: brUUID}
-
-	mutateOps, err := m.ovsClient.Where(&ovsRow).Mutate(&ovsRow, model.Mutation{
-		Field:   &ovsRow.Ports,
-		Mutator: "insert",
-		Value:   []string{port.UUID},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create bridge mutation: %v", err)
-	}
-
-	// Combine operations
-	operations = append(operations, mutateOps...)
-
 	// Create interface operation
 	interfaceOps, err := m.ovsClient.Create(iface)
 	if err != nil {
@@ -1149,26 +1129,19 @@ func (m *Manager) addPortToOVSBridge(
 	}
 	operations = append(operations, portOps...)
 
-	// Mutate the bridge to add the port using the correct OVSDB mutation pattern
-	mutateOp := ovsdb.Operation{
-		Op:    "mutate",
-		Table: "Bridge",
-		Where: []ovsdb.Condition{{
-			Column:   "_uuid",
-			Function: "==",
-			Value:    ovsdb.UUID{GoUUID: bridge.UUID},
-		}},
-		Mutations: []ovsdb.Mutation{{
-			Column:  "ports",
-			Mutator: "insert",
-			Value: ovsdb.OvsSet{
-				GoSet: []any{
-					ovsdb.UUID{GoUUID: "new-port-add"},
-				},
-			},
-		}},
+	// Add to bridge ports
+	// Use the OVSDB mutation pattern to add the port to the bridge
+	mutateOps, err := m.ovsClient.Where(&bridge).Mutate(&bridge, model.Mutation{
+		Field:   &bridge.Ports,
+		Mutator: ovsdb.OperationInsert,
+		Value:   []string{port.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create bridge mutation: %v", err)
 	}
-	operations = append(operations, mutateOp)
+
+	// Combine operations
+	operations = append(operations, mutateOps...)
 
 	// Execute transaction
 	results, err := m.ovsClient.Transact(ctx, operations...)
@@ -1707,19 +1680,6 @@ func macAddressesEqual(a, b net.HardwareAddr) bool {
 		}
 	}
 	return true
-}
-
-// getRootUUID retrieves the root UUID from the Open_vSwitch table.
-func (m *Manager) getBridgeUUID() (string, error) {
-	var brUUID string
-	for uuid := range m.ovsClient.Cache().Table("Bridge").Rows() {
-		brUUID = uuid
-		break // Take the first (and typically only) UUID
-	}
-	if brUUID == "" {
-		return "", fmt.Errorf("no Open_vSwitch root UUID found")
-	}
-	return brUUID, nil
 }
 
 // getRootUUID retrieves the root UUID from the Open_vSwitch table.
