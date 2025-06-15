@@ -21,6 +21,7 @@ import (
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -403,31 +404,38 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	return nil
 }
 
+func (m *Manager) getContainerSandboxID(
+	ctx context.Context,
+	containerID string,
+) (string, error) {
+	container, err := m.dockerClient.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect container %s: %v", containerID[:12], err)
+	}
+	return container.NetworkSettings.SandboxID, nil
+}
+
 func (m *Manager) getContainerNetNS(
 	ctx context.Context,
 	containerID string,
 ) (netns.NsHandle, error) {
-	container, err := m.dockerClient.ContainerInspect(ctx, containerID)
+	fd, err := m.getContainerFd(ctx, containerID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to inspect container %s: %v", containerID[:12], err)
+		return 0, fmt.Errorf("failed to get container netns fd: %v", err)
 	}
-	netNsPath := container.NetworkSettings.SandboxKey
-
-	return netns.GetFromPath(netNsPath)
+	return netns.NsHandle(fd), nil
 }
 
-// getContainerPID gets the PID of a running container.
-func (m *Manager) getContainerPID(ctx context.Context, containerID string) (int, error) {
-	container, err := m.dockerClient.ContainerInspect(ctx, containerID)
+func (m *Manager) getContainerFd(
+	ctx context.Context,
+	containerID string,
+) (int, error) {
+	sandboxID, err := m.getContainerSandboxID(ctx, containerID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to inspect container: %v", err)
+		return 0, fmt.Errorf("failed to get container sandbox ID: %v", err)
 	}
-
-	if container.State.Pid == 0 {
-		return 0, fmt.Errorf("container is not running")
-	}
-
-	return container.State.Pid, nil
+	path := fmt.Sprintf("/var/run/docker/netns/%s", sandboxID)
+	return unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 }
 
 // generatePortName generates a unique port name for a container.
@@ -468,19 +476,27 @@ func (m *Manager) setLinkUp(interfaceName string) error {
 }
 
 // moveLinkToNetns moves a network interface to a different network namespace.
-func (m *Manager) moveLinkToNetns(interfaceName string, pid int) error {
+func (m *Manager) moveLinkToNetns(interfaceName, containerID string) error {
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
 		return fmt.Errorf("failed to find link %s: %v", interfaceName, err)
 	}
 
-	if err := netlink.LinkSetNsPid(link, pid); err != nil {
-		return fmt.Errorf("failed to move link %s to netns %d: %v", interfaceName, pid, err)
+	fd, err := m.getContainerFd(context.Background(), containerID)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to get file descriptor for container %s: %v",
+			containerID[:12],
+			err,
+		)
+	}
+
+	if err := netlink.LinkSetNsFd(link, fd); err != nil {
+		return fmt.Errorf("failed to move link %s to netns %d: %v", interfaceName, fd, err)
 	}
 
 	m.logger.V(3).Info("Moved interface to container namespace",
-		"interface", interfaceName,
-		"pid", pid)
+		"interface", interfaceName)
 
 	return nil
 }
@@ -953,12 +969,6 @@ func (m *Manager) AddPort(
 		return fmt.Errorf("failed to ensure bridge exists: %v", err)
 	}
 
-	// Get container PID
-	containerPID, err := m.getContainerPID(ctx, containerID)
-	if err != nil {
-		return err
-	}
-
 	// Generate port names
 	portID := m.generatePortName(containerID)
 	hostSide := portID + "_l"
@@ -989,8 +999,21 @@ func (m *Manager) AddPort(
 		return fmt.Errorf("failed to set host side up: %v", err)
 	}
 
+	ns, err := m.getContainerNetNS(ctx, containerID)
+	if err != nil {
+		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
+			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)
+		}
+		return fmt.Errorf("failed to get container netns: %v", err)
+	}
+	defer func() {
+		if err := ns.Close(); err != nil {
+			m.logger.V(1).Info("Failed to close container namespace", "error", err)
+		}
+	}()
+
 	// Move container side to container namespace and configure
-	if err := m.moveLinkToNetns(containerSide, containerPID); err != nil {
+	if err := m.moveLinkToNetns(containerSide, containerID); err != nil {
 		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
 			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)
 		}
