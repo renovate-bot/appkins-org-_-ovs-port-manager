@@ -3,5 +3,8 @@
     "activityBar.background": "#25320A",
     "titleBar.activeBackground": "#34460F",
     "titleBar.activeForeground": "#F7FCEE"
-  }
+  },
+  "github-actions.workflows.pinned.workflows": [
+    ".github/workflows/docker-multiarch.yml"
+  ]
 }
