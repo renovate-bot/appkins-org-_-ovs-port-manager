@@ -404,7 +404,7 @@ func (m *Manager) removeOVSPort(ctx context.Context, containerID string) error {
 	return nil
 }
 
-func (m *Manager) getContainerSandboxID(
+func (m *Manager) getContainerSandboxKey(
 	ctx context.Context,
 	containerID string,
 ) (string, error) {
@@ -412,30 +412,57 @@ func (m *Manager) getContainerSandboxID(
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect container %s: %v", containerID[:12], err)
 	}
-	return container.NetworkSettings.SandboxID, nil
-}
 
-func (m *Manager) getContainerNetNS(
-	ctx context.Context,
-	containerID string,
-) (netns.NsHandle, error) {
-	fd, err := m.getContainerFd(ctx, containerID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get container netns fd: %v", err)
+	if container.State.Pid == 0 {
+		return "", fmt.Errorf("container %s is not running", containerID[:12])
 	}
-	return netns.NsHandle(fd), nil
+
+	if container.NetworkSettings.SandboxKey == "" {
+		return "", fmt.Errorf("container %s has no sandbox ID", containerID[:12])
+	}
+
+	return container.NetworkSettings.SandboxKey, nil
 }
 
+// getContainerFd gets a file descriptor for the container's network namespace with proper cleanup.
+// Returns fd, cleanup function, and error.
 func (m *Manager) getContainerFd(
 	ctx context.Context,
 	containerID string,
-) (int, error) {
-	sandboxID, err := m.getContainerSandboxID(ctx, containerID)
+) (int, func(), error) {
+	netnsPath, err := m.getContainerSandboxKey(ctx, containerID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get container sandbox ID: %v", err)
+		return 0, nil, fmt.Errorf("failed to get container sandbox ID: %v", err)
 	}
-	path := fmt.Sprintf("/var/run/docker/netns/%s", sandboxID)
-	return unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+
+	// Use Docker's netns path via SandboxKey for more reliable access
+	fd, err := unix.Open(netnsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to open netns %s: %v", netnsPath, err)
+	}
+
+	cleanup := func() {
+		if err := unix.Close(fd); err != nil {
+			// Log error but don't fail the operation - this is cleanup
+			m.logger.V(1).Info("Failed to close container netns fd", "error", err)
+		}
+	}
+
+	return fd, cleanup, nil
+}
+
+// getContainerNetNS gets a network namespace handle for the container with proper cleanup.
+// Returns namespace handle, cleanup function, and error.
+func (m *Manager) getContainerNetNS(
+	ctx context.Context,
+	containerID string,
+) (netns.NsHandle, func(), error) {
+	fd, cleanup, err := m.getContainerFd(ctx, containerID)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to get container netns fd: %v", err)
+	}
+
+	return netns.NsHandle(fd), cleanup, nil
 }
 
 // generatePortName generates a unique port name for a container.
@@ -482,7 +509,7 @@ func (m *Manager) moveLinkToNetns(interfaceName, containerID string) error {
 		return fmt.Errorf("failed to find link %s: %v", interfaceName, err)
 	}
 
-	fd, err := m.getContainerFd(context.Background(), containerID)
+	fd, cleanup, err := m.getContainerFd(context.Background(), containerID)
 	if err != nil {
 		return fmt.Errorf(
 			"failed to get file descriptor for container %s: %v",
@@ -490,6 +517,7 @@ func (m *Manager) moveLinkToNetns(interfaceName, containerID string) error {
 			err,
 		)
 	}
+	defer cleanup() // Ensure FD is properly closed
 
 	if err := netlink.LinkSetNsFd(link, fd); err != nil {
 		return fmt.Errorf("failed to move link %s to netns %d: %v", interfaceName, fd, err)
@@ -612,21 +640,17 @@ func (m *Manager) configureInterfaceInCurrentNs(
 }
 
 // configureInterfaceInContainer configures an interface inside a container using Docker ID.
-// This eliminates the need for filesystem operations by using netns.GetFromDocker.
+// This uses optimized file descriptor access via Docker SandboxKey.
 func (m *Manager) configureInterfaceInContainer(
 	ctx context.Context,
 	containerID, oldName, newName, ipAddr, macAddr, mtu, gateway string,
 ) error {
-	// Get container namespace directly from Docker ID (eliminates filesystem operations)
-	containerNs, err := m.getContainerNetNS(ctx, containerID)
+	// Get container namespace with proper cleanup
+	containerNs, containerCleanup, err := m.getContainerNetNS(ctx, containerID)
 	if err != nil {
 		return fmt.Errorf("failed to get container netns: %v", err)
 	}
-	defer func() {
-		if err := containerNs.Close(); err != nil {
-			m.logger.V(1).Info("Failed to close container namespace", "error", err)
-		}
-	}()
+	defer containerCleanup()
 
 	// Get current (host) namespace
 	hostNs, err := netns.Get()
@@ -656,7 +680,7 @@ func (m *Manager) configureInterfaceInContainer(
 		return err
 	}
 
-	m.logger.V(2).Info("Configured interface in container using Docker ID",
+	m.logger.V(2).Info("Configured interface in container using optimized FD access",
 		"container_id", containerID[:12],
 		"old_name", oldName,
 		"new_name", newName,
@@ -998,19 +1022,6 @@ func (m *Manager) AddPort(
 		}
 		return fmt.Errorf("failed to set host side up: %v", err)
 	}
-
-	ns, err := m.getContainerNetNS(ctx, containerID)
-	if err != nil {
-		if err := m.removePortFromOVSBridgeCommand(hostSide); err != nil {
-			m.logger.V(1).Info("Failed to remove port from OVS bridge during cleanup", "error", err)
-		}
-		return fmt.Errorf("failed to get container netns: %v", err)
-	}
-	defer func() {
-		if err := ns.Close(); err != nil {
-			m.logger.V(1).Info("Failed to close container namespace", "error", err)
-		}
-	}()
 
 	// Move container side to container namespace and configure
 	if err := m.moveLinkToNetns(containerSide, containerID); err != nil {
