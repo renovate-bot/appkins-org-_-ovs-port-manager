@@ -16,7 +16,6 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/go-logr/logr"
-	"github.com/google/uuid"
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
@@ -43,15 +42,6 @@ const (
 	// InterfaceNameLimit is the maximum length for network interface names in Linux.
 	InterfaceNameLimit = 15
 )
-
-// OVS port manager namespace for UUID v5 generation.
-var ovsPortManagerNamespace = uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-
-// generateDeterministicUUID creates a deterministic UUID v5 based on a name.
-// This ensures that the same name always generates the same UUID for OVSDB consistency.
-func generateDeterministicUUID(name string) string {
-	return uuid.NewSHA1(ovsPortManagerNamespace, []byte(name)).String()
-}
 
 // Manager manages OVS ports for Docker containers.
 type Manager struct {
@@ -1152,7 +1142,7 @@ func (m *Manager) addPortToOVSBridge(
 		m.logger.V(2).Info("Using existing interface", "interface", portName, "uuid", interfaceUUID)
 	} else {
 		// Create new Interface record with deterministic UUID
-		interfaceUUID = generateDeterministicUUID("interface:" + portName)
+		interfaceUUID = "uuid"
 		iface := &models.Interface{
 			UUID:        interfaceUUID,
 			Name:        portName,
@@ -1199,7 +1189,7 @@ func (m *Manager) addPortToOVSBridge(
 		m.logger.V(2).Info("Using existing port", "port", portName, "uuid", portUUID)
 	} else {
 		// Create new Port record with deterministic UUID
-		portUUID = generateDeterministicUUID("port:" + portName)
+		portUUID = "uuid"
 		port := &models.Port{
 			UUID:        portUUID,
 			Name:        portName,
