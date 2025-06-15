@@ -1062,15 +1062,15 @@ func (m *Manager) addPortToOVSBridge(
 	m.logger.V(2).Info("Adding port to OVS bridge", "bridge", bridgeName, "port", portName)
 
 	// Check if port already exists on the bridge
-	var existingPorts []models.Port
+	var existingPortsOnBridge []models.Port
 	err := m.ovs.WhereCache(func(p *models.Port) bool {
 		return p.Name == portName
-	}).List(ctx, &existingPorts)
+	}).List(ctx, &existingPortsOnBridge)
 	if err != nil {
 		return fmt.Errorf("failed to check existing ports: %v", err)
 	}
 
-	if len(existingPorts) > 0 {
+	if len(existingPortsOnBridge) > 0 {
 		m.logger.V(1).Info("Port already exists on bridge", "bridge", bridgeName, "port", portName)
 		return nil
 	}
@@ -1099,34 +1099,112 @@ func (m *Manager) addPortToOVSBridge(
 	// Build transaction operations
 	operations := []ovsdb.Operation{}
 
-	// Create Interface record
-	iface := &models.Interface{
-		UUID:        "new-interface-add", // Named UUID for transaction
-		Name:        portName,
-		Type:        "",
-		ExternalIDs: interfaceExternalIDs,
+	// Check if interface already exists
+	var existingInterfaces []models.Interface
+	err = m.ovs.WhereCache(func(i *models.Interface) bool {
+		return i.Name == portName
+	}).List(ctx, &existingInterfaces)
+	if err != nil {
+		return fmt.Errorf("failed to check existing interfaces: %v", err)
 	}
 
-	// Create interface operation
-	if ops, err := m.ovs.Create(iface); err != nil {
-		return fmt.Errorf("failed to create interface operation: %v", err)
+	var interfaceUUID string
+	if len(existingInterfaces) > 0 {
+		// Interface already exists, update it with external IDs
+		existingInterface := &existingInterfaces[0]
+		interfaceUUID = existingInterface.UUID
+
+		// Update external IDs if they're different
+		if len(interfaceExternalIDs) > 0 {
+			// Merge external IDs
+			updatedExternalIDs := make(map[string]string)
+			for k, v := range existingInterface.ExternalIDs {
+				updatedExternalIDs[k] = v
+			}
+			for k, v := range interfaceExternalIDs {
+				updatedExternalIDs[k] = v
+			}
+
+			// Update the interface with new external IDs
+			existingInterface.ExternalIDs = updatedExternalIDs
+			if ops, err := m.ovs.Where(existingInterface).Update(existingInterface, &existingInterface.ExternalIDs); err != nil {
+				return fmt.Errorf("failed to update interface external IDs: %v", err)
+			} else {
+				operations = append(operations, ops...)
+			}
+		}
+
+		m.logger.V(2).Info("Using existing interface", "interface", portName, "uuid", interfaceUUID)
 	} else {
-		operations = append(operations, ops...)
+		// Create new Interface record
+		iface := &models.Interface{
+			UUID:        "new-interface-add", // Named UUID for transaction
+			Name:        portName,
+			Type:        "",
+			ExternalIDs: interfaceExternalIDs,
+		}
+		interfaceUUID = iface.UUID
+
+		// Create interface operation
+		if ops, err := m.ovs.Create(iface); err != nil {
+			return fmt.Errorf("failed to create interface operation: %v", err)
+		} else {
+			operations = append(operations, ops...)
+		}
+
+		m.logger.V(2).Info("Creating new interface", "interface", portName, "uuid", interfaceUUID)
 	}
 
-	// Create Port record
-	port := &models.Port{
-		UUID:        "new-port-add", // Named UUID for transaction
-		Name:        portName,
-		Interfaces:  []string{"new-interface-add"}, // Link to interface named UUID
-		ExternalIDs: map[string]string{},
+	// Check if port already exists
+	var existingPorts []models.Port
+	err = m.ovs.WhereCache(func(p *models.Port) bool {
+		return p.Name == portName
+	}).List(ctx, &existingPorts)
+	if err != nil {
+		return fmt.Errorf("failed to check existing ports: %v", err)
 	}
 
-	// Create port operation
-	if ops, err := m.ovs.Create(port); err != nil {
-		return fmt.Errorf("failed to create port operation: %v", err)
+	var portUUID string
+	if len(existingPorts) > 0 {
+		// Port already exists, use existing port and update if needed
+		existingPort := &existingPorts[0]
+		portUUID = existingPort.UUID
+
+		// Check if the port is already associated with the correct interface
+		needsUpdate := false
+		if len(existingPort.Interfaces) == 0 || existingPort.Interfaces[0] != interfaceUUID {
+			// Update port to reference the correct interface
+			existingPort.Interfaces = []string{interfaceUUID}
+			needsUpdate = true
+		}
+
+		if needsUpdate {
+			if ops, err := m.ovs.Where(existingPort).Update(existingPort, &existingPort.Interfaces); err != nil {
+				return fmt.Errorf("failed to update port interfaces: %v", err)
+			} else {
+				operations = append(operations, ops...)
+			}
+		}
+
+		m.logger.V(2).Info("Using existing port", "port", portName, "uuid", portUUID)
 	} else {
-		operations = append(operations, ops...)
+		// Create new Port record
+		port := &models.Port{
+			UUID:        "new-port-add", // Named UUID for transaction
+			Name:        portName,
+			Interfaces:  []string{interfaceUUID}, // Link to interface UUID
+			ExternalIDs: map[string]string{},
+		}
+		portUUID = port.UUID
+
+		// Create port operation
+		if ops, err := m.ovs.Create(port); err != nil {
+			return fmt.Errorf("failed to create port operation: %v", err)
+		} else {
+			operations = append(operations, ops...)
+		}
+
+		m.logger.V(2).Info("Creating new port", "port", portName, "uuid", portUUID)
 	}
 
 	if ops, err := m.ovs.Where(bridge).Mutate(
@@ -1134,7 +1212,7 @@ func (m *Manager) addPortToOVSBridge(
 		model.Mutation{
 			Field:   &bridge.Ports,
 			Mutator: ovsdb.MutateOperationInsert,
-			Value:   []string{port.UUID},
+			Value:   []string{portUUID},
 		}); err == nil {
 		operations = append(operations, ops...)
 	} else {
