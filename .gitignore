@@ -48,3 +48,4 @@ ovs-port-manager
 # Uncomment if you have local config files
 # config.local.yaml
 # .env.local
+.vscode/settings.json
