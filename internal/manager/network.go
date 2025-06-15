@@ -5,56 +5,20 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings" // Added back strings import
+	"strings"
 	"time"
 
-	// "github.com/appkins-org/ovs-port-manager/internal/models" // Keep only one declaration, this is in manager.go.
-	"github.com/go-logr/logr" // Added for m.logger
-	"github.com/google/uuid"
+	"github.com/go-logr/logr"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
-// ovsPortManagerNamespace is used by generateDeterministicMAC.
-// var ovsPortManagerNamespace = uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") // Keep only one declaration
-
-// generateDeterministicMAC creates a deterministic MAC address based on an IP address.
-// This ensures that the same IP always generates the same MAC address for ARP neighbor consistency.
-func generateDeterministicMAC(ipAddr string) (net.HardwareAddr, error) {
-	if ipAddr == "" {
-		return nil, fmt.Errorf("IP address cannot be empty")
-	}
-
-	// Parse the IP to validate it
-	ip := net.ParseIP(ipAddr)
-	if ip == nil {
-		return nil, fmt.Errorf("invalid IP address: %s", ipAddr)
-	}
-
-	// Generate a deterministic UUID based on the IP address
-	macUUID := uuid.NewSHA1(ovsPortManagerNamespace, []byte("mac:"+ipAddr))
-
-	// Convert UUID to MAC address
-	// Use the first 6 bytes of the UUID as MAC address
-	uuidBytes := macUUID[:]
-
-	// Create MAC address with local administered bit set (bit 1 of first octet)
-	// This ensures it's a locally administered MAC and won't conflict with real hardware
-	mac := make(net.HardwareAddr, 6)
-	copy(mac, uuidBytes[:6])
-
-	// Set the locally administered bit (bit 1) and clear multicast bit (bit 0)
-	mac[0] = (mac[0] & 0xFC) | 0x02 // xxxx xx10 pattern
-
-	return mac, nil
-}
-
 // getContainerSandboxKey gets the sandbox key for a container's network namespace.
 func (m *Manager) getContainerSandboxKey(
 	ctx context.Context,
 	containerID string,
-	logger logr.Logger, // Added logger parameter
+	logger logr.Logger,
 ) (string, error) {
 	container, err := m.dockerClient.ContainerInspect(ctx, containerID)
 	if err != nil {
@@ -79,7 +43,7 @@ func (m *Manager) getContainerSandboxKey(
 func (m *Manager) getContainerFd(
 	ctx context.Context,
 	containerID string,
-	logger logr.Logger, // Added logger parameter
+	logger logr.Logger,
 ) (int, func(), error) {
 	netnsPath, err := m.getContainerSandboxKey(ctx, containerID, logger)
 	if err != nil {
@@ -106,7 +70,7 @@ func (m *Manager) getContainerFd(
 func (m *Manager) setLinkUp(
 	interfaceName string,
 	logger logr.Logger,
-) error { // Added logger parameter
+) error {
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
 		logger.V(1).Error(err, "Failed to find link", "interface", interfaceName)
@@ -122,10 +86,11 @@ func (m *Manager) setLinkUp(
 }
 
 // configureInterfaceInContainer configures an interface inside a container using Docker ID.
+// The newFriendlyName parameter is the target friendly interface name.
 func (m *Manager) configureInterfaceInContainer(
 	ctx context.Context,
-	containerID, oldName, newName, ipAddr, macAddr, mtu, gateway string,
-	logger logr.Logger, // Added logger parameter
+	containerID, oldName, newFriendlyName, ipAddr, macAddr, mtu, gateway string,
+	logger logr.Logger,
 ) error {
 	// Get container namespace file descriptor
 	fd, cleanup, err := m.getContainerFd(ctx, containerID, logger)
@@ -141,16 +106,40 @@ func (m *Manager) configureInterfaceInContainer(
 	}
 	defer nsHandle.Delete()
 
-	// Configure the interface within the container namespace using the handle
-	if err := m.configureInterfaceWithHandle(nsHandle, oldName, newName, ipAddr, macAddr, mtu, gateway, logger); err != nil { // Pass logger
+	currentNameInNamespace := oldName // The name of the link as it was passed into the namespace
+
+	// Rename interface to the friendly name if specified and different from the current name
+	if newFriendlyName != "" && currentNameInNamespace != newFriendlyName {
+		_, err := m.renameToFriendlyInterfaceNameWithHandle(
+			nsHandle,
+			currentNameInNamespace,
+			newFriendlyName,
+			logger,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"failed to rename interface from %s to %s in container %s: %w",
+				currentNameInNamespace,
+				newFriendlyName,
+				containerID[:12],
+				err,
+			)
+		}
+		// After successful rename, the interface to be configured is now newFriendlyName
+		currentNameInNamespace = newFriendlyName
+		logger.V(3).Info("Successfully renamed interface in container",
+			"container_id", containerID[:12], "old_name", oldName, "new_name", newFriendlyName)
+	}
+
+	// Configure the interface within the container namespace using its current (possibly new) name
+	if err := m.configureInterfaceWithHandle(nsHandle, currentNameInNamespace, ipAddr, macAddr, mtu, gateway, logger); err != nil {
+		// Pass up error, context should be sufficient from configureInterfaceWithHandle
 		return err
 	}
 
-	logger.V(2).Info("Configured interface in container using modern netlink handle",
-		"container_id", containerID[:12],
-		"old_name", oldName,
-		"new_name", newName,
-		"ip_address", ipAddr)
+	logger.V(2).Info("Configured interface in container",
+		"container_id", containerID[:12], "original_name_in_ns", oldName,
+		"final_name_in_ns", currentNameInNamespace, "ip_address", ipAddr)
 
 	return nil
 }
@@ -159,7 +148,7 @@ func (m *Manager) configureInterfaceInContainer(
 func (m *Manager) deleteLinkByName(
 	interfaceName string,
 	logger logr.Logger,
-) error { // Added logger parameter
+) error {
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
 		// Interface doesn't exist, consider it already cleaned up
@@ -182,8 +171,7 @@ func (m *Manager) createVethPairWithNames(
 	hostSide, containerSide string,
 	fd int,
 	logger logr.Logger,
-) error { // Added logger parameter
-	// Create veth pair
+) error {
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
 			Name: hostSide,
@@ -197,14 +185,10 @@ func (m *Manager) createVethPairWithNames(
 			return fmt.Errorf("failed to create veth pair: %w", err)
 		}
 		logger.V(3).Info("Not creating veth pair, already exists",
-			"host_side", hostSide,
-			"container_side", containerSide,
-		)
+			"host_side", hostSide, "container_side", containerSide)
 	} else {
 		logger.V(3).Info("Created veth pair",
-			"host_side", hostSide,
-			"container_side", containerSide,
-		)
+			"host_side", hostSide, "container_side", containerSide)
 	}
 
 	// Verify host side interface exists after creation
@@ -215,9 +199,7 @@ func (m *Manager) createVethPairWithNames(
 	// Note: Container side interface is created directly in the container namespace
 	// and cannot be verified from the host namespace
 	logger.V(3).Info("Veth pair created successfully",
-		"host_side", hostSide,
-		"container_side", containerSide,
-	)
+		"host_side", hostSide, "container_side", containerSide)
 
 	return nil
 }
@@ -227,7 +209,7 @@ func (m *Manager) addARPNeighborWithHandle(
 	handle *netlink.Handle,
 	link netlink.Link,
 	ipAddr, macAddr string,
-	logger logr.Logger, // Added logger parameter
+	logger logr.Logger,
 ) error {
 	ip := net.ParseIP(ipAddr)
 	if ip == nil {
@@ -258,44 +240,72 @@ func (m *Manager) addARPNeighborWithHandle(
 	return nil
 }
 
-// configureInterfaceWithHandle configures an interface using a specific netlink handle.
-func (m *Manager) configureInterfaceWithHandle(
+// renameToFriendlyInterfaceNameWithHandle renames a network interface to a user-specified
+// or default "friendly" name using a specific netlink handle.
+// The oldName is typically a system-generated name (e.g., from veth creation),
+// and newName is the desired final name (e.g., "eth0", "eth1") either from
+// the OVSInterfaceLabel Docker label or a configuration default.
+// It includes a retry mechanism to handle timing issues after renaming.
+func (m *Manager) renameToFriendlyInterfaceNameWithHandle(
 	handle *netlink.Handle,
-	oldName, newName, ipAddr, macAddr, mtu, gateway string,
-	logger logr.Logger, // Added logger parameter
-) error {
-	// Find the interface in the target namespace
+	oldName, newName string, // newName is the friendly name
+	logger logr.Logger,
+) (netlink.Link, error) {
 	link, err := handle.LinkByName(oldName)
 	if err != nil {
-		return fmt.Errorf("failed to find link %s in target namespace: %v", oldName, err)
+		return nil, fmt.Errorf("failed to find link %s in target namespace: %v", oldName, err)
 	}
 
-	// Rename interface if needed
-	if newName != "" && oldName != newName {
-		// Check if target interface name already exists
-		if _, err := handle.LinkByName(newName); err == nil {
-			return fmt.Errorf("interface %s already exists, cannot rename %s",
-				newName, oldName)
-		}
+	// Check if target interface name already exists
+	if _, err := handle.LinkByName(newName); err == nil {
+		return nil, fmt.Errorf(
+			"interface %s already exists, cannot rename %s",
+			newName,
+			oldName,
+		)
+	}
 
-		if err := handle.LinkSetName(link, newName); err != nil {
-			return fmt.Errorf("failed to rename interface %s to %s: %v", oldName, newName, err)
-		}
+	if err := handle.LinkSetName(link, newName); err != nil {
+		return nil, fmt.Errorf("failed to rename interface %s to %s: %v", oldName, newName, err)
+	}
 
-		// Re-get the link with new name, with retry for timing issues
-		var retryErr error
-		for i := 0; i < 3; i++ { // Use a literal int for loop condition
-			if link, retryErr = handle.LinkByName(newName); retryErr == nil {
-				break
-			}
-			logger.V(2).Info("Retrying to find renamed interface",
-				"attempt", i+1, "oldName", oldName, "newName", newName, "error", retryErr)
-			time.Sleep(time.Millisecond * 50) // Small delay
+	// Re-get the link with new name, with retry for timing issues
+	var retryErr error
+	var renamedLink netlink.Link
+	for i := 0; i < 3; i++ { // Use a literal int for loop condition
+		if renamedLink, retryErr = handle.LinkByName(newName); retryErr == nil {
+			logger.V(3).Info(
+				"Successfully found renamed interface",
+				"oldName", oldName, "newName", newName,
+			)
+			return renamedLink, nil
 		}
-		if retryErr != nil {
-			return fmt.Errorf("failed to find renamed link %s (from %s): %w",
-				newName, oldName, retryErr)
-		}
+		logger.V(2).Info(
+			"Retrying to find renamed interface",
+			"attempt", i+1, "oldName", oldName, "newName", newName, "error", retryErr,
+		)
+		time.Sleep(time.Millisecond * 50) // Small delay
+	}
+
+	return nil, fmt.Errorf(
+		"failed to find renamed link %s (from %s) after retries: %w",
+		newName,
+		oldName,
+		retryErr,
+	)
+}
+
+// configureInterfaceWithHandle configures an interface using a specific netlink handle.
+// It assumes the interface already has its final intended name in the namespace.
+func (m *Manager) configureInterfaceWithHandle(
+	handle *netlink.Handle,
+	interfaceName, ipAddr, macAddr, mtu, gateway string,
+	logger logr.Logger,
+) error {
+	// Find the interface in the target namespace by its current name
+	link, err := handle.LinkByName(interfaceName)
+	if err != nil {
+		return fmt.Errorf("failed to find link %s in target namespace: %v", interfaceName, err)
 	}
 
 	// Set MAC address if provided
@@ -336,7 +346,7 @@ func (m *Manager) configureInterfaceWithHandle(
 
 	// Set interface up
 	if err := handle.LinkSetUp(link); err != nil {
-		return fmt.Errorf("failed to set interface up: %v", err)
+		return fmt.Errorf("failed to set interface %s up: %v", interfaceName, err)
 	}
 
 	// Configure gateway if provided
@@ -370,13 +380,13 @@ func (m *Manager) configureInterfaceWithHandle(
 			} else if strings.Contains(errStr, "network is unreachable") {
 				// This often happens when the gateway is not in the same subnet as the interface IP
 				logger.V(1).Info("Gateway unreachable - this may be expected for certain network configurations",
-					"gateway", gateway, "interface", newName, "ip", ipAddr, "error", err)
+					"gateway", gateway, "interface", interfaceName, "ip", ipAddr, "error", err)
 				// Don't fail the operation for now, as this might be intentional
 			} else {
-				return fmt.Errorf("failed to add gateway route: %w", err)
+				return fmt.Errorf("failed to add gateway route for interface %s: %w", interfaceName, err)
 			}
 		} else {
-			logger.V(2).Info("Added default gateway route", "gateway", gateway, "interface", newName)
+			logger.V(2).Info("Added default gateway route", "gateway", gateway, "interface", interfaceName)
 		}
 	}
 
@@ -385,21 +395,19 @@ func (m *Manager) configureInterfaceWithHandle(
 		// Generate a deterministic MAC address for the gateway
 		ipAddrMAC, err := generateDeterministicMAC(ipAddr) // Call the local package function
 		if err != nil {
-			logger.V(1).Info("Failed to generate gateway MAC", "gateway", gateway, "error", err)
+			logger.V(1).Info("Failed to generate MAC for interface IP's ARP entry",
+				"interface_ip", ipAddr, "error", err)
 		} else {
 			if err := m.addARPNeighborWithHandle(handle, link, ipAddr, ipAddrMAC.String(), logger); err != nil { // Pass logger
-				logger.V(1).Info("Failed to add interface ARP entry", "error", err)
+				logger.V(1).Info("Failed to add interface ARP entry",
+					"interface_ip", ipAddr, "mac", ipAddrMAC.String(), "error", err)
 				// Don't fail the operation for ARP neighbor failures
 			}
 		}
 	}
 
 	logger.V(3).Info("Configured interface with handle",
-		"interface", newName,
-		"ip", ipAddr,
-		"mac", macAddr,
-		"mtu", mtu,
-		"gateway", gateway)
+		"interface", interfaceName, "ip", ipAddr, "mac", macAddr, "mtu", mtu, "gateway", gateway)
 
 	return nil
 }
