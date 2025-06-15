@@ -352,12 +352,25 @@ func (m *Manager) extractOVSConfig(
 
 	bridge := labels[OVSBridgeLabel]
 	if bridge == "" {
-		bridge = m.config.OVS.DefaultBridge
+		// Use default bridge from manager's config
+		if m.config != nil && m.config.OVS.DefaultBridge != "" {
+			bridge = m.config.OVS.DefaultBridge
+		} else {
+			// Fallback if manager config or default bridge is not set (should not happen in normal operation)
+			// Or, consider logging an error here if config is expected to always be present.
+			bridge = "ovs_bond0" // Default to a common OVS bridge name as a last resort
+		}
 	}
 
 	interfaceName := labels[OVSInterfaceLabel]
 	if interfaceName == "" {
-		interfaceName = m.config.OVS.DefaultInterface
+		// Use default interface from manager's config
+		if m.config != nil && m.config.OVS.DefaultInterface != "" {
+			interfaceName = m.config.OVS.DefaultInterface
+		} else {
+			// Fallback if manager config or default interface is not set
+			interfaceName = "bond0" // Default to a common interface name as a last resort
+		}
 	}
 
 	return &ContainerOVSConfig{
