@@ -616,16 +616,49 @@ func (m *Manager) configureInterfaceInCurrentNs(
 			return fmt.Errorf("invalid gateway IP %s", gateway)
 		}
 
+		// If we have an IP address, verify the gateway is in a reachable network
+		if ipAddr != "" {
+			// Parse the assigned IP address to check if gateway is reachable
+			if addr, err := netlink.ParseAddr(ipAddr); err == nil && addr.IPNet != nil {
+				if !addr.Contains(gw) {
+					m.logger.V(1).Info("Gateway is not in the same subnet as the assigned IP",
+						"gateway", gateway, "ip", ipAddr, "interface", newName)
+					// Continue anyway - the user might know what they're doing
+				}
+			}
+		}
+
+		// Create default route (0.0.0.0/0 for IPv4, ::/0 for IPv6)
+		var dst *net.IPNet
+		if gw.To4() != nil {
+			// IPv4 default route
+			_, dst, _ = net.ParseCIDR("0.0.0.0/0")
+		} else {
+			// IPv6 default route
+			_, dst, _ = net.ParseCIDR("::/0")
+		}
+
 		route := &netlink.Route{
 			LinkIndex: link.Attrs().Index,
+			Dst:       dst,
 			Gw:        gw,
 		}
 
 		if err := netlink.RouteAdd(route); err != nil {
-			// Check if route already exists
-			if !strings.Contains(err.Error(), "file exists") {
+			// Check if route already exists or if it's a more specific error
+			errStr := err.Error()
+			if strings.Contains(errStr, "file exists") {
+				m.logger.V(2).Info("Default route already exists, skipping", "gateway", gateway)
+			} else if strings.Contains(errStr, "network is unreachable") {
+				// This often happens when the gateway is not in the same subnet as the interface IP
+				m.logger.V(1).Info("Gateway unreachable - this may be expected for certain network configurations",
+					"gateway", gateway, "interface", newName, "ip", ipAddr, "error", err)
+				// Don't fail the operation for now, as this might be intentional
+			} else {
 				return fmt.Errorf("failed to add gateway route: %v", err)
 			}
+		} else {
+			m.logger.V(2).Info("Added default gateway route", "gateway", gateway, "interface", newName)
 		}
 	}
 
