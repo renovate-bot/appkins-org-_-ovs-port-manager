@@ -972,16 +972,3 @@ func macAddressesEqual(a, b net.HardwareAddr) bool {
 	}
 	return true
 }
-
-// End of file, ensure all old private OVS methods previously listed for removal
-// (e.g., _ensureBridge, removePortFromOVSBridgeCommand, etc.) are now gone.
-// The previous refactoring steps updated all callers to use ovsService or public methods.
-// This edit ensures that if any of their definitions remained, they are now removed.
-// The functions:
-// - func (m *Manager) _ensureBridge(...) { ... }
-// - func (m *Manager) removePortFromOVSBridgeCommand(...) { ... }
-// - func (m *Manager) findPortsForContainer(...) { ... } // The original one
-// - func (m *Manager) getPortForContainerInterface(...) { ... } // The original one
-// - func (m *Manager) addPortToOVSBridge(...) { ... }
-// - func (m *Manager) getRootUUID(...) { ... } // The one in Manager
-// should no longer exist in this file.

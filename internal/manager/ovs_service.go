@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"maps"
 	slices "slices"
 
 	"github.com/appkins-org/ovs-port-manager/internal/models"
@@ -292,13 +293,11 @@ func (s *ovsService) addPortToBridge(
 		}
 		if len(bridges) > 0 {
 			bridge := &bridges[0]
-			for _, portUUID := range bridge.Ports {
-				if portUUID == existingPortsOnBridge[0].UUID {
-					s.logger.V(1).
-						Info("Port already exists on the target bridge", "bridge", bridgeName, "port", portName)
-					// Potentially update external IDs if they differ
-					return s.updateInterfaceExternalIDs(ctx, portName, externalIDs...)
-				}
+			if slices.Contains(bridge.Ports, existingPortsOnBridge[0].UUID) {
+				s.logger.V(1).
+					Info("Port already exists on the target bridge", "bridge", bridgeName, "port", portName)
+				// Potentially update external IDs if they differ
+				return s.updateInterfaceExternalIDs(ctx, portName, externalIDs...)
 			}
 		}
 		s.logger.V(1).
@@ -343,9 +342,7 @@ func (s *ovsService) addPortToBridge(
 		if len(interfaceExternalIDs) > 0 {
 			needsUpdate := false
 			updatedExternalIDs := make(map[string]string)
-			for k, v := range existingInterface.ExternalIDs {
-				updatedExternalIDs[k] = v
-			}
+			maps.Copy(updatedExternalIDs, existingInterface.ExternalIDs)
 			for k, v := range interfaceExternalIDs {
 				if existingInterface.ExternalIDs[k] != v {
 					needsUpdate = true
@@ -367,7 +364,7 @@ func (s *ovsService) addPortToBridge(
 		}
 		s.logger.V(2).Info("Using existing interface", "interface", portName, "uuid", interfaceUUID)
 	} else {
-		interfaceUUID = "iface-" + portName // More descriptive named UUID
+		interfaceUUID = fmt.Sprintf("iface%s", portName)
 		iface := &models.Interface{
 			UUID:        interfaceUUID,
 			Name:        portName,
@@ -400,13 +397,7 @@ func (s *ovsService) addPortToBridge(
 		existingPort := &existingNamedPorts[0]
 		portUUID = existingPort.UUID
 		// Ensure port references the correct interface (newly created or existing)
-		currentInterfaceCorrect := false
-		for _, ref := range existingPort.Interfaces {
-			if ref == interfaceUUID {
-				currentInterfaceCorrect = true
-				break
-			}
-		}
+		currentInterfaceCorrect := slices.Contains(existingPort.Interfaces, interfaceUUID)
 		if !currentInterfaceCorrect {
 			existingPort.Interfaces = []string{interfaceUUID}
 			if ops, err := s.ovs.Where(existingPort).Update(existingPort, &existingPort.Interfaces); err != nil {
@@ -417,7 +408,8 @@ func (s *ovsService) addPortToBridge(
 		}
 		s.logger.V(2).Info("Using existing port", "port", portName, "uuid", portUUID)
 	} else {
-		portUUID = "ovsport-" + portName // More descriptive named UUID
+		// Cannot have dashes for UUID-Name, OVS thinks it's a UUID with dashes
+		portUUID = fmt.Sprintf("ovsport%s", portName)
 		port := &models.Port{
 			UUID:        portUUID,
 			Name:        portName,
@@ -432,13 +424,7 @@ func (s *ovsService) addPortToBridge(
 		s.logger.V(2).Info("Creating new port", "port", portName, "namedUUID", portUUID)
 	}
 
-	portAlreadyInBridge := false
-	for _, existingPortRef := range bridge.Ports {
-		if existingPortRef == portUUID {
-			portAlreadyInBridge = true
-			break
-		}
-	}
+	portAlreadyInBridge := slices.Contains(bridge.Ports, portUUID)
 
 	if !portAlreadyInBridge {
 		if ops, err := s.ovs.Where(bridge).Mutate(bridge, model.Mutation{
@@ -530,9 +516,7 @@ func (s *ovsService) updateInterfaceExternalIDs(
 	needsUpdate := false
 	newExternalIDs := make(map[string]string)
 	// Copy existing IDs first
-	for k, v := range existingInterface.ExternalIDs {
-		newExternalIDs[k] = v
-	}
+	maps.Copy(newExternalIDs, existingInterface.ExternalIDs)
 	// Check and update with target IDs
 	for k, v := range targetExternalIDs {
 		if existingInterface.ExternalIDs[k] != v {
