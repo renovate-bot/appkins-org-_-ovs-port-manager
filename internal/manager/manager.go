@@ -1219,9 +1219,7 @@ func (m *Manager) addPortToOVSBridge(
 
 	// Finally, add the port to the bridge if it's not already there
 	var bridgePorts []string
-	for _, portRef := range bridge.Ports {
-		bridgePorts = append(bridgePorts, portRef)
-	}
+	bridgePorts = append(bridgePorts, bridge.Ports...)
 
 	// Check if port is already in bridge (by UUID for existing ports, by named UUID for new ports)
 	portAlreadyInBridge := false
