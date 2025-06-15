@@ -1219,6 +1219,20 @@ func (m *Manager) addPortToOVSBridge(
 		return fmt.Errorf("failed to create bridge mutation: %v", err)
 	}
 
+	// Log transaction details before execution
+	m.logger.V(2).Info("Executing OVSDB transaction",
+		"bridge", bridgeName,
+		"port", portName,
+		"operationCount", len(operations))
+
+	for i, op := range operations {
+		m.logger.V(3).Info("OVSDB operation",
+			"index", i,
+			"op", op.Op,
+			"table", op.Table,
+			"where", len(op.Where))
+	}
+
 	// Execute transaction
 	results, err := m.ovs.Transact(ctx, operations...)
 	if err != nil {
@@ -1229,10 +1243,26 @@ func (m *Manager) addPortToOVSBridge(
 		return fmt.Errorf("OVS transaction failed: %v", err)
 	}
 	if _, err := ovsdb.CheckOperationResults(results, operations); err != nil {
-		m.logger.Error(err, "OVS transaction failed",
+		m.logger.Error(err, "OVS transaction failed - detailed operation results",
 			"bridge", bridgeName,
 			"port", portName,
-			"transactionResults", len(results))
+			"operationCount", len(operations),
+			"resultCount", len(results))
+
+		// Log details for each operation result
+		for i, result := range results {
+			if result.Error != "" {
+				m.logger.Error(nil, "OVSDB operation failed",
+					"operationIndex", i,
+					"error", result.Error,
+					"details", result.Details)
+			} else {
+				m.logger.V(3).Info("OVSDB operation succeeded",
+					"operationIndex", i,
+					"rowCount", result.Count)
+			}
+		}
+
 		return fmt.Errorf("OVS transaction failed: %v", err)
 	}
 
