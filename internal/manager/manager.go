@@ -1131,17 +1131,39 @@ func (m *Manager) addPortToOVSBridge(
 
 	// Add to bridge ports
 	// Use the OVSDB mutation pattern to add the port to the bridge
-	mutateOps, err := m.ovsClient.Where(&bridge).Mutate(&bridge, model.Mutation{
-		Field:   &bridge.Ports,
-		Mutator: ovsdb.OperationInsert,
-		Value:   []string{port.UUID},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create bridge mutation: %v", err)
-	}
-
 	// Combine operations
-	operations = append(operations, mutateOps...)
+	// Mutate the bridge to add the port using the correct OVSDB mutation pattern
+	mutateOp := ovsdb.Operation{
+		Op:    ovsdb.OperationMutate,
+		Table: "Bridge",
+		Where: []ovsdb.Condition{{
+			Column:   "_uuid",
+			Function: "==",
+			Value:    ovsdb.UUID{GoUUID: bridge.UUID},
+		}},
+		Mutations: []ovsdb.Mutation{{
+			Column:  "ports",
+			Mutator: "insert",
+			Value: ovsdb.OvsSet{
+				GoSet: []any{
+					ovsdb.UUID{GoUUID: "new-port-add"},
+				},
+			},
+		}},
+	}
+	operations = append(operations, mutateOp)
+
+	// mutateOps, err := m.ovsClient.Where(&bridge).Mutate(&bridge, model.Mutation{
+	// 	Field:   &bridge.Ports,
+	// 	Mutator: ovsdb.OperationInsert,
+	// 	Value:   []string{port.UUID},
+	// })
+	// if err != nil {
+	// 	return fmt.Errorf("failed to create bridge mutation: %v", err)
+	// }
+
+	// // Combine operations
+	// operations = append(operations, mutateOps...)
 
 	// Execute transaction
 	results, err := m.ovsClient.Transact(ctx, operations...)
