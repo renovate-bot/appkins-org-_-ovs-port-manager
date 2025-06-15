@@ -76,14 +76,35 @@ func New(logger logr.Logger) (*Manager, error) {
 		return nil, fmt.Errorf("invalid configuration: %v", err)
 	}
 
-	// Create Docker client
-	dockerClient, err := dockerclient.NewClientWithOpts(
+	// Create Docker client with configured socket path
+	dockerOpts := []dockerclient.Opt{
 		dockerclient.FromEnv,
 		dockerclient.WithAPIVersionNegotiation(),
-	)
+	}
+
+	// Use configured Docker socket path if specified
+	if cfg.Docker.SocketPath != "" {
+		dockerOpts = append(dockerOpts, dockerclient.WithHost("unix://"+cfg.Docker.SocketPath))
+	}
+
+	dockerClient, err := dockerclient.NewClientWithOpts(dockerOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Docker client: %v", err)
 	}
+
+	// Test Docker client connectivity
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dockerInfo, err := dockerClient.Info(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to connect to Docker daemon", "socketPath", cfg.Docker.SocketPath)
+		return nil, fmt.Errorf("failed to connect to Docker daemon: %v", err)
+	}
+	logger.Info("Successfully connected to Docker daemon",
+		"version", dockerInfo.ServerVersion,
+		"platform", dockerInfo.OperatingSystem,
+		"socketPath", cfg.Docker.SocketPath)
 
 	// Create OVS database client with configurable database name
 	clientDBModel, err := models.FullDatabaseModel()
@@ -105,6 +126,15 @@ func New(logger logr.Logger) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OVS client: %v", err)
 	}
+
+	// Test OVS client connectivity
+	err = ovsClient.Connect(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to connect to OVS database", "socketPath", cfg.OVS.SocketPath)
+		return nil, fmt.Errorf("failed to connect to OVS database: %v", err)
+	}
+	logger.Info("Successfully connected to OVS database", "socketPath", cfg.OVS.SocketPath)
+
 	models.Schema()
 
 	return &Manager{
@@ -211,8 +241,14 @@ func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 
 	m.logger.V(1).Info("Creating default bridge", "bridge", m.config.OVS.DefaultBridge)
 
-	// Create bridge
-	bridge := &models.Bridge{
+	// Get root UUID
+	rootUUID, err := m.getRootUUID()
+	if err != nil {
+		return fmt.Errorf("failed to get root UUID: %v", err)
+	}
+
+	// Create bridge with proper UUID
+	bridge := models.Bridge{
 		UUID:        "new-bridge", // Named UUID for transaction
 		Name:        m.config.OVS.DefaultBridge,
 		Ports:       []string{},
@@ -220,41 +256,42 @@ func (m *Manager) ensureDefaultBridge(ctx context.Context) error {
 		OtherConfig: map[string]string{},
 	}
 
-	ops, err := m.ovsClient.Create(bridge)
+	// Create bridge insertion operation
+	insertOp, err := m.ovsClient.Create(&bridge)
 	if err != nil {
 		return fmt.Errorf("failed to create bridge operation: %v", err)
 	}
 
-	// Get the Open_vSwitch table to add this bridge to it
-	var ovsList []models.OpenvSwitch
-	err = m.ovsClient.List(ctx, &ovsList)
-	if err != nil {
-		return fmt.Errorf("failed to list Open_vSwitch: %v", err)
+	// Create mutation to add bridge to Open_vSwitch table
+	ovsRow := models.OpenvSwitch{
+		UUID: rootUUID,
 	}
-
-	if len(ovsList) == 0 {
-		return fmt.Errorf("no Open_vSwitch record found")
-	}
-
-	// Add bridge to Open_vSwitch bridges list using mutation
-	ovsRow := &models.OpenvSwitch{UUID: ovsList[0].UUID}
-	mutateOps, err := m.ovsClient.Where(ovsRow).Mutate(ovsRow, model.Mutation{
+	mutateOps, err := m.ovsClient.Where(&ovsRow).Mutate(&ovsRow, model.Mutation{
 		Field:   &ovsRow.Bridges,
 		Mutator: "insert",
-		Value:   []string{"new-bridge"}, // Reference named UUID
+		Value:   []string{bridge.UUID}, // Reference the bridge UUID
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create bridge mutation: %v", err)
 	}
 
 	// Combine operations
-	allOps := append(ops, mutateOps...)
+	operations := append(insertOp, mutateOps...)
 
 	// Execute the transaction
-	_, err = m.ovsClient.Transact(ctx, allOps...)
+	reply, err := m.ovsClient.Transact(ctx, operations...)
 	if err != nil {
 		return fmt.Errorf("failed to create bridge %s: %v", m.config.OVS.DefaultBridge, err)
 	}
+
+	// Check operation results
+	if _, err := ovsdb.CheckOperationResults(reply, operations); err != nil {
+		return fmt.Errorf("bridge creation failed: %v", err)
+	}
+
+	m.logger.V(1).Info("Bridge creation successful",
+		"bridge", m.config.OVS.DefaultBridge,
+		"uuid", reply[0].UUID.GoUUID)
 
 	return nil
 }
@@ -814,32 +851,85 @@ func (m *Manager) createVethPairWithNames(hostSide, containerSide string) error 
 
 // removePortFromOVSBridgeCommand removes a port from OVS bridge.
 func (m *Manager) removePortFromOVSBridgeCommand(portName string) error {
-	// Find and delete the port
+	ctx := context.Background()
+	m.logger.V(2).Info("Removing port from OVS bridge", "port", portName)
+
+	// Find the port
 	var ports []models.Port
 	err := m.ovsClient.WhereCache(func(p *models.Port) bool {
 		return p.Name == portName
-	}).List(context.Background(), &ports)
+	}).List(ctx, &ports)
 	if err != nil {
 		return fmt.Errorf("failed to find port %s: %v", portName, err)
 	}
 
 	if len(ports) == 0 {
 		// Port doesn't exist, which is fine (--if-exists behavior)
+		m.logger.V(1).Info("Port does not exist, nothing to remove", "port", portName)
 		return nil
 	}
 
-	// Delete the port
-	for _, port := range ports {
-		ops, err := m.ovsClient.Where(&port).Delete()
-		if err != nil {
-			return fmt.Errorf("failed to create delete operation: %v", err)
-		}
+	port := &ports[0]
 
-		_, err = m.ovsClient.Transact(context.Background(), ops...)
-		if err != nil {
-			return fmt.Errorf("failed to delete port: %v", err)
+	// Find which bridge contains this port
+	var bridges []models.Bridge
+	err = m.ovsClient.WhereCache(func(b *models.Bridge) bool {
+		for _, portUUID := range b.Ports {
+			if portUUID == port.UUID {
+				return true
+			}
 		}
+		return false
+	}).List(ctx, &bridges)
+	if err != nil {
+		return fmt.Errorf("failed to find bridge containing port %s: %v", portName, err)
 	}
+
+	// Build transaction operations
+	operations := []ovsdb.Operation{}
+
+	// If we found a bridge containing this port, remove it from the bridge first
+	if len(bridges) > 0 {
+		bridge := &bridges[0]
+
+		// Mutate the bridge to remove the port using the correct OVSDB mutation pattern
+		mutateOp := ovsdb.Operation{
+			Op:    "mutate",
+			Table: "Bridge",
+			Where: []ovsdb.Condition{{
+				Column:   "_uuid",
+				Function: "==",
+				Value:    ovsdb.UUID{GoUUID: bridge.UUID},
+			}},
+			Mutations: []ovsdb.Mutation{{
+				Column:  "ports",
+				Mutator: "delete",
+				Value: ovsdb.OvsSet{
+					GoSet: []any{
+						ovsdb.UUID{GoUUID: port.UUID},
+					},
+				},
+			}},
+		}
+		operations = append(operations, mutateOp)
+	}
+
+	// Delete the port and its interfaces
+	deleteOps, err := m.ovsClient.Where(port).Delete()
+	if err != nil {
+		return fmt.Errorf("failed to create delete operation: %v", err)
+	}
+	operations = append(operations, deleteOps...)
+
+	// Execute transaction
+	results, err := m.ovsClient.Transact(ctx, operations...)
+	if err != nil {
+		return fmt.Errorf("failed to remove port from bridge: %v", err)
+	}
+
+	m.logger.V(2).Info("Successfully removed port from OVS bridge",
+		"port", portName,
+		"transactionResults", len(results))
 
 	return nil
 }
@@ -910,8 +1000,14 @@ func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) err
 		return nil
 	}
 
+	// Get root UUID
+	rootUUID, err := m.getRootUUID()
+	if err != nil {
+		return fmt.Errorf("failed to get root UUID: %v", err)
+	}
+
 	// Create the bridge
-	bridge := &models.Bridge{
+	bridge := models.Bridge{
 		UUID:        "new-bridge-exists", // Named UUID for transaction
 		Name:        bridgeName,
 		Ports:       []string{},
@@ -919,42 +1015,41 @@ func (m *Manager) ensureBridgeExists(ctx context.Context, bridgeName string) err
 		OtherConfig: map[string]string{},
 	}
 
-	ops, err := m.ovsClient.Create(bridge)
+	// Create bridge insertion operation
+	insertOp, err := m.ovsClient.Create(&bridge)
 	if err != nil {
 		return fmt.Errorf("failed to create bridge operation: %v", err)
 	}
 
-	// Get the Open_vSwitch table to add this bridge to it
-	var ovsList []models.OpenvSwitch
-	err = m.ovsClient.List(ctx, &ovsList)
-	if err != nil {
-		return fmt.Errorf("failed to list Open_vSwitch: %v", err)
+	// Create mutation to add bridge to Open_vSwitch table
+	ovsRow := models.OpenvSwitch{
+		UUID: rootUUID,
 	}
-
-	if len(ovsList) == 0 {
-		return fmt.Errorf("no Open_vSwitch record found")
-	}
-
-	// Add bridge to Open_vSwitch bridges list using mutation
-	ovsRow := &models.OpenvSwitch{UUID: ovsList[0].UUID}
-	mutateOps, err := m.ovsClient.Where(ovsRow).Mutate(ovsRow, model.Mutation{
+	mutateOps, err := m.ovsClient.Where(&ovsRow).Mutate(&ovsRow, model.Mutation{
 		Field:   &ovsRow.Bridges,
 		Mutator: "insert",
-		Value:   []string{"new-bridge-exists"}, // Reference named UUID
+		Value:   []string{bridge.UUID}, // Reference the bridge UUID
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create bridge mutation: %v", err)
 	}
 
 	// Combine operations
-	allOps := append(ops, mutateOps...)
+	operations := append(insertOp, mutateOps...)
 
-	_, err = m.ovsClient.Transact(ctx, allOps...)
+	// Execute the transaction
+	reply, err := m.ovsClient.Transact(ctx, operations...)
 	if err != nil {
 		return fmt.Errorf("failed to create bridge: %v", err)
 	}
 
-	m.logger.V(3).Info("Created OVS bridge", "bridge", bridgeName)
+	// Check operation results
+	if _, err := ovsdb.CheckOperationResults(reply, operations); err != nil {
+		return fmt.Errorf("bridge creation failed: %v", err)
+	}
+
+	m.logger.V(3).Info("Created OVS bridge", "bridge", bridgeName,
+		"uuid", reply[0].UUID.GoUUID)
 	return nil
 }
 
@@ -964,9 +1059,25 @@ func (m *Manager) addPortToOVSBridge(
 	bridgeName, portName string,
 	externalIDs ...map[string]string,
 ) error {
+	m.logger.V(2).Info("Adding port to OVS bridge", "bridge", bridgeName, "port", portName)
+
+	// Check if port already exists on the bridge
+	var existingPorts []models.Port
+	err := m.ovsClient.WhereCache(func(p *models.Port) bool {
+		return p.Name == portName
+	}).List(ctx, &existingPorts)
+	if err != nil {
+		return fmt.Errorf("failed to check existing ports: %v", err)
+	}
+
+	if len(existingPorts) > 0 {
+		m.logger.V(1).Info("Port already exists on bridge", "bridge", bridgeName, "port", portName)
+		return nil
+	}
+
 	// Find the bridge
 	var bridges []models.Bridge
-	err := m.ovsClient.WhereCache(func(b *models.Bridge) bool {
+	err = m.ovsClient.WhereCache(func(b *models.Bridge) bool {
 		return b.Name == bridgeName
 	}).List(ctx, &bridges)
 	if err != nil {
@@ -1004,6 +1115,28 @@ func (m *Manager) addPortToOVSBridge(
 	// Build transaction operations
 	operations := []ovsdb.Operation{}
 
+	// rootUUID, err := m.getRootUUID()
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get root UUID: %v", err)
+	// }
+
+	// // Create mutation to add bridge to Open_vSwitch table
+	// ovsRow := models.OpenvSwitch{
+	// 	UUID: rootUUID,
+	// }
+
+	// mutateOps, err := m.ovsClient.Where(&ovsRow).Mutate(&ovsRow, model.Mutation{
+	// 	Field:   &ovsRow.ExternalIDs,
+	// 	Mutator: "insert",
+	// 	Value:   iface.ExternalIDs,
+	// })
+	// if err != nil {
+	// 	return fmt.Errorf("failed to create bridge mutation: %v", err)
+	// }
+
+	// // Combine operations
+	// operations = append(operations, mutateOps...)
+
 	// Create interface operation
 	interfaceOps, err := m.ovsClient.Create(iface)
 	if err != nil {
@@ -1018,19 +1151,37 @@ func (m *Manager) addPortToOVSBridge(
 	}
 	operations = append(operations, portOps...)
 
-	// Add port to bridge operation
-	bridge.Ports = append(bridge.Ports, "new-port-add") // Use named UUID
-	bridgeOps, err := m.ovsClient.Where(bridge).Update(bridge)
-	if err != nil {
-		return fmt.Errorf("failed to create bridge update operation: %v", err)
+	// Mutate the bridge to add the port using the correct OVSDB mutation pattern
+	mutateOp := ovsdb.Operation{
+		Op:    "mutate",
+		Table: "Bridge",
+		Where: []ovsdb.Condition{{
+			Column:   "_uuid",
+			Function: "==",
+			Value:    ovsdb.UUID{GoUUID: bridge.UUID},
+		}},
+		Mutations: []ovsdb.Mutation{{
+			Column:  "ports",
+			Mutator: "insert",
+			Value: ovsdb.OvsSet{
+				GoSet: []any{
+					ovsdb.UUID{GoUUID: "new-port-add"},
+				},
+			},
+		}},
 	}
-	operations = append(operations, bridgeOps...)
+	operations = append(operations, mutateOp)
 
 	// Execute transaction
-	_, err = m.ovsClient.Transact(ctx, operations...)
+	results, err := m.ovsClient.Transact(ctx, operations...)
 	if err != nil {
 		return fmt.Errorf("failed to add port to bridge: %v", err)
 	}
+
+	m.logger.V(2).Info("Successfully added port to OVS bridge",
+		"bridge", bridgeName,
+		"port", portName,
+		"transactionResults", len(results))
 
 	return nil
 }
@@ -1163,23 +1314,23 @@ func (m *Manager) isPortFullyConfigured(
 }
 
 // cleanupExistingPort removes an existing port and its associated network interfaces.
-func (m *Manager) cleanupExistingPort(portName, containerID string) error {
+func (m *Manager) cleanupExistingPort(portName, containerID string) (err error) {
 	m.logger.V(2).Info("Cleaning up existing port",
 		"port", portName,
 		"container_id", containerID[:12])
 
 	// Remove port from OVS bridge
-	if err := m.removePortFromOVSBridgeCommand(portName); err != nil {
+	if err = m.removePortFromOVSBridgeCommand(portName); err != nil {
 		m.logger.V(1).
 			Error(err, "Failed to remove port from OVS bridge during cleanup", "port", portName)
 	}
 
 	// Delete the veth pair (this will delete both sides)
-	if err := m.deleteLinkByName(portName); err != nil {
+	if err = m.deleteLinkByName(portName); err != nil {
 		m.logger.V(1).Error(err, "Failed to delete veth pair during cleanup", "port", portName)
 	}
 
-	return nil
+	return err
 }
 
 // ensurePortStateConsistent ensures that the port state is consistent between
@@ -1558,4 +1709,17 @@ func macAddressesEqual(a, b net.HardwareAddr) bool {
 		}
 	}
 	return true
+}
+
+// getRootUUID retrieves the root UUID from the Open_vSwitch table.
+func (m *Manager) getRootUUID() (string, error) {
+	var rootUUID string
+	for uuid := range m.ovsClient.Cache().Table("Open_vSwitch").Rows() {
+		rootUUID = uuid
+		break // Take the first (and typically only) UUID
+	}
+	if rootUUID == "" {
+		return "", fmt.Errorf("no Open_vSwitch root UUID found")
+	}
+	return rootUUID, nil
 }
