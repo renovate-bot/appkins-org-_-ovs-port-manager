@@ -276,6 +276,8 @@ github.com/vishvananda/netlink v1.3.1/go.mod h1:ARtKouGSTGchR8aMwmkzC0qiNPrrWO5J
 github.com/vishvananda/netns v0.0.5/go.mod h1:SpkAiCQRtJ6TvvxPnOSyH3BMl6unz3xZlaprSwhNNJM=
 github.com/vishvananda/netns v0.0.6-0.20250603211132-596a397987da h1:mC1nvMWk5XBRn1Z9N00Oc4W4VUPCFNyRegfoGRfgAVM=
 github.com/vishvananda/netns v0.0.6-0.20250603211132-596a397987da/go.mod h1:ELVcLf8hb1tvN+vDrKNbHzEl17IAKvt4hxUujgkGAig=
+github.com/vishvananda/netns v0.0.6-0.20260520201028-9d2a6ea1cbf3 h1:2TRNpIE4zCqMtiCyXyXx9WqvasAYqYZa0q4uB2zRKlA=
+github.com/vishvananda/netns v0.0.6-0.20260520201028-9d2a6ea1cbf3/go.mod h1:ELVcLf8hb1tvN+vDrKNbHzEl17IAKvt4hxUujgkGAig=
 github.com/yuin/goldmark v1.1.25/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.1.32/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
