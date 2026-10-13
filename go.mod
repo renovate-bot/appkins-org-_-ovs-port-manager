@@ -9,6 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/ovn-org/libovsdb v0.7.0
 	github.com/spf13/viper v1.20.1
+	github.com/stretchr/testify v1.10.0
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.6-0.20250603211132-596a397987da
 	go.uber.org/zap v1.27.0
@@ -30,7 +31,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
@@ -50,7 +51,6 @@ require (
 	github.com/spf13/afero v1.12.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
-	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
